@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.local
+*.local
+state.json
+cache/
+reference/
+.claude/
+user/profile.json
+user/taste.md
+user/routines.md
+user/mood-rules.md
+user/playlists.json
+*.log
+.DS_Store
+.idea/
+.vscode/

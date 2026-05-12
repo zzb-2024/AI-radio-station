@@ -1,0 +1,23 @@
+{
+  "taste": {
+    "favoriteArtists": "",
+    "favoriteGenres": "",
+    "favoriteLanguages": "",
+    "preferredTempo": "",
+    "avoid": ""
+  },
+  "scenes": {
+    "work": "",
+    "lateNight": "",
+    "commute": "",
+    "sleep": "",
+    "rainyDay": ""
+  },
+  "djStyle": {
+    "tone": "克制、成熟、像深夜电台主持人",
+    "songIntro": "每首歌开始前自然介绍，能确认背景就讲背景，不确定就讲听感和歌词意象",
+    "transition": "上一首和下一首之间要有自然过渡"
+  },
+  "notes": "",
+  "updatedAt": ""
+}

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPT Neural Radio</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='6' fill='%237CFFB2'/><circle cx='16' cy='16' r='12' fill='none' stroke='%237CFFB2' stroke-opacity='0.3' stroke-width='1'/></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Noto+Sans+SC:wght@300;400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css?v=20260511-tech-v19">
+</head>
+<body>
+
+<div id="loading">
+  <div id="loading-text">INITIALIZING SIGNAL</div>
+  <div id="loading-bar"><div id="loading-fill"></div></div>
+</div>
+
+<div class="tech-backdrop"></div>
+<div class="grid"></div>
+
+<div id="status-bar">
+  <span><span id="signal-dot"></span>GPT NEURAL RADIO</span>
+  <span id="status-actions">
+    <span id="status-right">SIGNAL ACTIVE</span>
+    <button id="settings-btn" type="button" aria-label="settings" title="User profile">SETTINGS</button>
+  </span>
+</div>
+
+<div id="layout">
+
+  <section id="chat-col">
+
+    <div id="messages">
+      <div class="msg ai">
+        <div class="msg-label">anjiu</div>
+        <div class="msg-bubble">Signal connected. Tell me how tonight feels — I'll find the right frequency.</div>
+      </div>
+    </div>
+
+    <div id="input-area">
+      <div id="input-row">
+        <span id="input-prefix">&gt;</span>
+        <input id="input" type="text" placeholder="tell me how tonight feels_"
+               autocomplete="off" spellcheck="false">
+        <button id="send-btn">SEND</button>
+      </div>
+      <div id="tags">
+        <span class="tag" data-val="calm">calm</span>
+        <span class="tag" data-val="melancholy">melancholy</span>
+        <span class="tag" data-val="focused">focused</span>
+        <span class="tag" data-val="restless">restless</span>
+        <span class="tag" data-val="hopeful">hopeful</span>
+        <span class="tag" data-val="随便放点什么">随便</span>
+      </div>
+    </div>
+  </section>
+
+  <aside id="queue-col">
+    <div id="queue-header">TRANSMISSION QUEUE</div>
+    <div id="queue-items"><div class="qi-empty">AWAITING SIGNAL…</div></div>
+    <div id="lyric-ticker"></div>
+  </aside>
+
+</div>
+
+<div id="player">
+  <div id="player-cover">♪</div>
+  <div id="player-info">
+    <div id="player-song">—</div>
+    <div id="player-artist"></div>
+  </div>
+  <div id="progress-wrap"><div id="progress-bar"></div></div>
+  <div id="player-controls">
+    <button class="ctrl" id="btn-prev" aria-label="prev">⟨⟨</button>
+    <button class="ctrl" id="btn-play" aria-label="play">▶</button>
+    <button class="ctrl" id="btn-next" aria-label="next">⟩⟩</button>
+  </div>
+</div>
+
+<audio id="audio"></audio>
+<div id="profile-modal" hidden></div>
+<script type="module" src="/js/app.js?v=20260511-tech-v19"></script>
+</body>
+</html>

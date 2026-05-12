@@ -18,6 +18,19 @@ const RADIO_PLAN_OUTPUT_CONTRACT = [
   '- 选曲必须优先遵守长期用户画像，尤其是避免内容、场景偏好和 DJ 风格。',
 ].join('\n');
 
+const RADIO_CHAT_SYSTEM = [
+  '',
+  '---',
+  '当前用户是在和电台 DJ 交流，不是在要求换歌或推荐歌单。',
+  '用户说“这首歌”“他”“作者”“背景”时，默认都指当前播放的歌曲；不要根据较早聊天历史改指其它歌曲。',
+  '请只做简短、自然、有陪伴感的中文回复，像真人在边听歌边聊天。',
+  '不要像客服、说明书或标准答案；可以有轻微口语感，但别油腻、别端着。',
+  '不要输出 JSON，不要列歌单，不要主动开始播放歌曲。',
+  '如果用户只是聊天、提问、表达心情，就先接住对方的话；需要时可以温和承接当前音乐氛围。',
+  '如果系统上下文里出现“联网搜索结果”，优先使用其中的信息；信息不足就明确说不确定，不要编造。',
+  '回复控制在 120 个中文字以内，适合被 TTS 朗读。',
+].join('\n');
+
 export async function askRadioPlan(userInput, env = {}) {
   const { systemPrompt, messages } = await buildContext(userInput, env);
   const raw = await completeText({
@@ -30,6 +43,55 @@ export async function askRadioPlan(userInput, env = {}) {
   const result = parsePlanPayload(raw);
   await state.addConversationTurn(userInput || '(auto)', JSON.stringify(result));
   return result;
+}
+
+export async function askRadioChat(userInput, env = {}, { allowPlanFallback = false } = {}) {
+  const { systemPrompt, messages } = await buildContext(userInput, env);
+  const raw = (await completeText({
+    label: 'chat',
+    systemPrompt: `${systemPrompt}${RADIO_CHAT_SYSTEM}`,
+    messages: [
+      ...messages.slice(-3, -1),
+      currentSongContextMessage(env.currentSong),
+      messages[messages.length - 1],
+    ].filter(Boolean),
+    maxTokens: Math.min(config.openai.maxTokens, 260),
+  })).trim();
+  const accidentalPlan = allowPlanFallback ? parseOptionalPlanPayload(raw) : null;
+  if (accidentalPlan?.play?.length) {
+    return accidentalPlan;
+  }
+
+  await state.addConversationTurn(userInput || '(chat)', raw);
+  return {
+    say: raw,
+    play: [],
+    reason: 'chat',
+    segue: '',
+  };
+}
+
+function currentSongContextMessage(song) {
+  if (!song?.name) return null;
+  const details = [
+    `当前播放歌曲：${song.name} - ${song.artist || '未知艺人'}`,
+    song.album ? `专辑：${song.album}` : '',
+    song.publishTime ? `发行时间戳：${song.publishTime}` : '',
+    song.lyric ? `已知创作信息：${extractCreditLines(song.lyric).join('；')}` : '',
+  ].filter(Boolean).join('；');
+
+  return {
+    role: 'system',
+    content: `${details}。回答用户追问时，“这首歌”必须指这首当前播放歌曲。`,
+  };
+}
+
+function extractCreditLines(lyric) {
+  return String(lyric || '')
+    .split(/\r?\n/)
+    .map(line => line.replace(/^\[\d{2}:\d{2}(?:\.\d+)?\]\s*/, '').trim())
+    .filter(line => /^(作词|作曲|编曲|制作人)\s*:/.test(line))
+    .slice(0, 6);
 }
 
 export async function completeText({
@@ -64,6 +126,19 @@ function parsePlanPayload(text) {
   }
 
   throw new Error(`LLM: no valid JSON in response: ${String(text).slice(0, 200)}`);
+}
+
+function parseOptionalPlanPayload(text) {
+  const candidates = [text, extractCodeBlock(text), extractJSONObject(text)].filter(Boolean);
+  for (const raw of candidates) {
+    try {
+      const result = normalizePlanResult(JSON.parse(raw));
+      return result.play.length ? result : null;
+    } catch {
+      // 不是合法播放计划时按普通聊天处理。
+    }
+  }
+  return null;
 }
 
 function extractCodeBlock(text) {

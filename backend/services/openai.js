@@ -13,6 +13,17 @@ export async function completeOpenAI({
   messages,
   maxTokens = config.openai.maxTokens,
 } = {}) {
+  if (config.openai.wireApi === 'chat') {
+    return completeOpenAIChat({ systemPrompt, messages, maxTokens });
+  }
+  return completeOpenAIResponses({ systemPrompt, messages, maxTokens });
+}
+
+async function completeOpenAIResponses({
+  systemPrompt,
+  messages,
+  maxTokens = config.openai.maxTokens,
+} = {}) {
   const body = {
     model: config.openai.model,
     instructions: systemPrompt || '',
@@ -22,7 +33,7 @@ export async function completeOpenAI({
       effort: config.openai.reasoningEffort,
     },
     store: false,
-    stream: true,
+    stream: config.openai.stream,
   };
 
   const res = await request({
@@ -30,7 +41,7 @@ export async function completeOpenAI({
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
+      'Accept': config.openai.stream ? 'text/event-stream' : 'application/json',
       'Authorization': `Bearer ${config.openai.apiKey}`,
     },
     body: JSON.stringify(body),
@@ -42,6 +53,47 @@ export async function completeOpenAI({
   }
 
   const text = parseOpenAIResponse(res.text);
+  if (!text) {
+    throw new Error('OpenAI returned empty content');
+  }
+  return text;
+}
+
+async function completeOpenAIChat({
+  systemPrompt,
+  messages,
+  maxTokens = config.openai.maxTokens,
+} = {}) {
+  const body = {
+    model: config.openai.model,
+    messages: [
+      { role: 'system', content: systemPrompt || '' },
+      ...(messages || []).map(toChatMessage),
+    ],
+    max_completion_tokens: maxTokens,
+    reasoning_effort: config.openai.reasoningEffort,
+    stream: config.openai.stream,
+  };
+
+  const res = await request({
+    url: buildOpenAIUrl('/chat/completions'),
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': config.openai.stream ? 'text/event-stream' : 'application/json',
+      'Authorization': `Bearer ${config.openai.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    timeoutMs: config.openai.timeoutMs,
+  });
+
+  if ((res.status || 0) >= 400) {
+    throw new Error(`HTTP ${res.status} from ${buildOpenAIUrl('/chat/completions')}: ${extractErrorDetail(res.text)}`);
+  }
+
+  const text = config.openai.stream
+    ? extractChatCompletionStream(res.text)
+    : extractChatCompletionText(JSON.parse(res.text));
   if (!text) {
     throw new Error('OpenAI returned empty content');
   }
@@ -61,6 +113,51 @@ function toResponseInputMessage(message) {
       },
     ],
   };
+}
+
+function toChatMessage(message) {
+  const role = ['user', 'assistant', 'developer', 'system'].includes(message?.role)
+    ? message.role
+    : 'user';
+  return {
+    role: role === 'developer' ? 'system' : role,
+    content: String(message?.content || ''),
+  };
+}
+
+function extractChatCompletionText(json) {
+  const message = json?.choices?.[0]?.message;
+  const content = message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map(part => typeof part?.text === 'string' ? part.text : '')
+      .join('\n')
+      .trim();
+  }
+  return '';
+}
+
+function extractChatCompletionStream(text) {
+  let output = '';
+  for (const block of String(text || '').split(/\r?\n\r?\n/)) {
+    const data = block
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n')
+      .trim();
+
+    if (!data || data === '[DONE]') continue;
+    try {
+      const event = JSON.parse(data);
+      const delta = event?.choices?.[0]?.delta?.content;
+      if (typeof delta === 'string') output += delta;
+    } catch {
+      // 忽略非 JSON keepalive。
+    }
+  }
+  return output.trim();
 }
 
 function extractResponseText(json) {

@@ -102,7 +102,8 @@ img { display: block; max-width: 100%; }
   min-width: 0;
 }
 #status-right { white-space: nowrap; }
-#settings-btn {
+#settings-btn,
+#sound-btn {
   flex: 0 0 auto;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 2px;
@@ -112,7 +113,8 @@ img { display: block; max-width: 100%; }
   color: rgba(152,163,175,0.82);
   background: rgba(255,255,255,0.035);
 }
-#settings-btn:hover {
+#settings-btn:hover,
+#sound-btn:hover {
   border-color: rgba(152,163,175,0.24);
   color: var(--accent);
 }
@@ -227,6 +229,27 @@ img { display: block; max-width: 100%; }
   transition: color 0.2s;
 }
 #send-btn:hover { color: var(--accent); }
+#mode-btn {
+  flex: 0 0 auto;
+  min-width: 48px;
+  border: 1px solid rgba(152,163,175,0.20);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(244,246,248,0.86);
+  background: rgba(152,163,175,0.12);
+  transition: border-color 0.2s, background 0.2s, color 0.2s;
+}
+#mode-btn[data-mode="chat"] {
+  color: rgba(166,175,184,0.88);
+  background: rgba(255,255,255,0.045);
+  border-color: rgba(255,255,255,0.08);
+}
+#mode-btn:hover {
+  border-color: rgba(152,163,175,0.32);
+  color: var(--fg);
+}
 
 #tags { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .tag {
@@ -297,7 +320,8 @@ img { display: block; max-width: 100%; }
 }
 
 /* ── Profile modal ── */
-#profile-modal {
+#profile-modal,
+#sound-modal {
   position: fixed;
   inset: 0;
   z-index: 45;
@@ -307,7 +331,8 @@ img { display: block; max-width: 100%; }
   padding: 24px;
   background: rgba(4,6,8,0.62);
 }
-#profile-modal[hidden] { display: none; }
+#profile-modal[hidden],
+#sound-modal[hidden] { display: none; }
 #profile-dialog {
   width: min(720px, 100%);
   max-height: min(760px, calc(100vh - 96px));
@@ -434,9 +459,117 @@ img { display: block; max-width: 100%; }
   padding-top: 2px;
 }
 
+#sound-dialog {
+  width: min(560px, 100%);
+  max-height: min(680px, calc(100vh - 96px));
+  overflow-y: auto;
+  padding: 20px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 8px;
+  background: rgba(16,20,25,0.98);
+  box-shadow: 0 22px 80px rgba(0,0,0,0.42);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(152,163,175,0.18) transparent;
+}
+#sound-dialog::-webkit-scrollbar { width: 3px; }
+#sound-dialog::-webkit-scrollbar-thumb { background: rgba(152,163,175,0.18); border-radius: 2px; }
+#sound-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+#sound-title {
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: rgba(186,194,202,0.86);
+}
+#sound-status {
+  margin-top: 4px;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  color: rgba(147,139,130,0.62);
+}
+#sound-close,
+#sound-actions button {
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 5px 8px;
+  border-radius: 2px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: rgba(152,163,175,0.82);
+  background: rgba(255,255,255,0.035);
+}
+#sound-close:hover,
+#sound-actions button:hover {
+  border-color: rgba(152,163,175,0.24);
+  color: var(--accent);
+}
+#sound-form {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sound-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.035);
+}
+.sound-field-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.sound-field span {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: rgba(197,190,181,0.72);
+}
+.sound-field output {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: rgba(152,163,175,0.78);
+}
+.sound-field input[type="range"] {
+  width: 100%;
+  appearance: none;
+  height: 2px;
+  background: rgba(255,255,255,0.10);
+  outline: none;
+}
+.sound-field input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: var(--accent);
+}
+.sound-field input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: var(--accent);
+}
+#sound-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
 @media (max-width: 720px) {
   #profile-form { grid-template-columns: 1fr; }
-  #settings-btn { font-size: 8px; padding: 5px 6px; }
+  #settings-btn,
+  #sound-btn { font-size: 8px; padding: 5px 6px; }
+  #sound-dialog { max-height: min(700px, calc(100vh - 48px)); }
 }
 
 #lyric-ticker {

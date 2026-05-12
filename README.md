@@ -108,7 +108,12 @@ npm start
 | `OPENAI_REASONING_EFFORT` | 否 | 默认 `low`，可设 `high` |
 | `NCM_MUSIC_U` | 否 | 网易云登录 cookie，**解锁 VIP** |
 | `NCM_CSRF` | 否 | 配合 `NCM_MUSIC_U` 一起使用 |
+| `NCM_BITRATE` | 否 | 默认 `hires`，优先高解析度无损 Hi-Res |
+| `NCM_BITRATE_FALLBACKS` | 否 | 默认 `jyeffect,exhigh,standard`，Hi-Res 不可用时先退到高清臻音 |
+| `NCM_OPENAPI_APP_ID` / `NCM_OPENAPI_ACCESS_TOKEN` | 否 | 网易云 IoT OpenAPI 凭据；未配置时榜单列表退到公开接口 |
 | `TTS_PROVIDER` | 否 | `youdao` / `fish` / `auto`，有配置则启用 AI 口播 |
+| `WEB_SEARCH_API_KEY` | 否 | 智谱 Web Search key，用于实时榜单和当前歌曲背景检索 |
+| `WEB_SEARCH_ENGINE` | 否 | 默认 `search_std`，对应智谱 search-std 资源包 |
 | `CAIYUN_APP_KEY` | 否 | 彩云天气 App Key，有则把天气传给 AI 当上下文 |
 | `CAIYUN_APP_SECRET` | 否 | 彩云天气 App Secret，推荐配置，用于签名鉴权 |
 | `WEATHER_CITY` | 否 | 默认 `合肥` |
@@ -134,6 +139,10 @@ npm start
 | GET | `/api/next` | 兼容旧调用，切到下一首 |
 | GET | `/api/search?q&limit` | 网易云搜歌 |
 | GET | `/api/song/url?id` | 拿播放地址（VIP 自动 fallback weapi） |
+| GET | `/api/toplists` | 获取云音乐榜单列表；支持 `category` / `q` 过滤 |
+| GET | `/api/toplists/:id/tracks` | 获取某个榜单的歌曲列表 |
+| POST | `/api/dj/preview` | 预生成尾段串场，用于下一首切换前先开口 |
+| POST | `/api/dj/preview/mark` | 标记这段尾段串场已经实际播出 |
 | GET | `/api/plan/today` / POST | 今日日程 get/set |
 | GET | `/api/taste` | 最近播放 + 偏好快照 |
 | GET/POST | `/api/profile` | 读取 / 保存结构化用户画像 |

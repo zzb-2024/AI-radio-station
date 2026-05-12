@@ -16,8 +16,8 @@ async function jsonFetch(url, opts = {}) {
 }
 
 export const api = {
-  chat(message, requestId) {
-    return jsonFetch(CONFIG.api.chat, { method: 'POST', body: JSON.stringify({ message, requestId }) });
+  chat(message, requestId, mode = 'auto') {
+    return jsonFetch(CONFIG.api.chat, { method: 'POST', body: JSON.stringify({ message, requestId, mode }) });
   },
   now() {
     return jsonFetch(CONFIG.api.now);
@@ -33,6 +33,15 @@ export const api = {
   },
   getProfileSuggestion() {
     return jsonFetch(CONFIG.api.profileSuggestion);
+  },
+  djPreview() {
+    return jsonFetch('/api/dj/preview', { method: 'POST' });
+  },
+  markDjPreview(nextSongId) {
+    return jsonFetch('/api/dj/preview/mark', {
+      method: 'POST',
+      body: JSON.stringify({ nextSongId }),
+    });
   },
   play(action, index) {
     return jsonFetch('/api/play', {

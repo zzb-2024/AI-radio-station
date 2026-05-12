@@ -21,11 +21,12 @@ export const CONFIG = {
     fakeLevelEase:     0.12,
   },
   audio: {
-    ttsDuckVolume: 0.22,
-    ttsBoostGain: 1.32,
+    ttsDuckVolume: 0.80,
+    ttsBoostGain: 2.40,
     musicFadeMs: 420,
     ttsFadeMs: 160,
     ttsRestoreDelayMs: 140,
+    djLeadInMs: 3000,
   },
   ui: {
     loadingMs: 1300,

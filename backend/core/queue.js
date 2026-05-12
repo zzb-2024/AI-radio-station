@@ -13,9 +13,8 @@ import { search, getUrl, getDetail, getLyric } from '../services/ncm.js';
 export async function resolveQueue(playList) {
   const tasks = (playList || []).map(async raw => {
     try {
-      const songs = await search(raw, config.queue.searchLimitPerItem);
-      if (!songs.length) return null;
-      const base = songs[0];
+      const base = await resolveBaseSong(raw);
+      if (!base?.id) return null;
       const [cdnUrl, detail, lyric] = await Promise.all([
         getUrl(base.id).catch(() => null),
         getDetail(base.id).catch(() => null),
@@ -41,4 +40,27 @@ export async function resolveQueue(playList) {
   return settled
     .map(r => r.status === 'fulfilled' ? r.value : null)
     .filter(Boolean);
+}
+
+async function resolveBaseSong(raw) {
+  if (raw && typeof raw === 'object' && raw.id) {
+    return {
+      id: Number(raw.id),
+      name: String(raw.name || ''),
+      artist: String(raw.artist || ''),
+      fee: Number(raw.fee || 0),
+      cover: raw.cover || null,
+      raw: String(raw.raw || `${raw.name || ''} - ${raw.artist || ''}`).trim(),
+    };
+  }
+
+  const keyword = String(raw || '').trim();
+  if (!keyword) return null;
+  const songs = await search(keyword, config.queue.searchLimitPerItem);
+  if (!songs.length) return null;
+  const base = songs[0];
+  return {
+    ...base,
+    raw: keyword,
+  };
 }

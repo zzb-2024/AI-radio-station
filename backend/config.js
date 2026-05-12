@@ -29,6 +29,8 @@ export const config = {
     maxTokens:       int('OPENAI_MAX_TOKENS', 1024),
     timeoutMs:       int('OPENAI_TIMEOUT_MS', 30000),
     reasoningEffort: str('OPENAI_REASONING_EFFORT', 'low'),
+    stream:          bool('OPENAI_STREAM', false),
+    wireApi:         str('OPENAI_WIRE_API', 'chat'),
   },
 
   // 网易云音乐（公开 API + weapi fallback）
@@ -38,7 +40,19 @@ export const config = {
     musicU:    str('NCM_MUSIC_U'), // 黑胶 cookie，解锁 VIP
     csrf:      str('NCM_CSRF'),
     timeoutMs: int('NCM_TIMEOUT_MS', 8000),
-    bitrate:   str('NCM_BITRATE', 'standard'),
+    bitrate:   str('NCM_BITRATE', 'hires'),
+    bitrateFallbacks: str('NCM_BITRATE_FALLBACKS', 'jyeffect,exhigh,standard'),
+    toplistTrackLimit: int('NCM_TOPLIST_TRACK_LIMIT', 5),
+  },
+
+  ncmOpenapi: {
+    baseUrl:     str('NCM_OPENAPI_BASE_URL', 'http://openapi.music.163.com'),
+    appId:       str('NCM_OPENAPI_APP_ID'),
+    accessToken: str('NCM_OPENAPI_ACCESS_TOKEN'),
+    appSecret:   str('NCM_OPENAPI_APP_SECRET'),
+    privateKey:  str('NCM_OPENAPI_PRIVATE_KEY'),
+    signType:    str('NCM_OPENAPI_SIGN_TYPE', 'RSA_SHA256'),
+    device:      str('NCM_OPENAPI_DEVICE_JSON', '{"channel":"box","deviceId":"ai-radio-station","deviceType":"soundbox","appVer":"1.0.0","os":"soundbox","osVer":"1.0.0","brand":"box","model":"soundbox"}'),
   },
 
   // Fish Audio TTS
@@ -57,7 +71,7 @@ export const config = {
       appSecret: str('YOUDAO_TTS_APP_SECRET'),
       voiceName: str('YOUDAO_TTS_VOICE_NAME', 'youxiaoxun'),
       speed:     str('YOUDAO_TTS_SPEED', '1'),
-      volume:    str('YOUDAO_TTS_VOLUME', '1.50'),
+      volume:    str('YOUDAO_TTS_VOLUME', '2.00'),
     },
   },
 
@@ -80,6 +94,18 @@ export const config = {
       appSecret: str('CAIYUN_APP_SECRET'),
       token:     str('CAIYUN_TOKEN'),
     },
+  },
+
+  webSearch: {
+    provider:   str('WEB_SEARCH_PROVIDER', 'zhipu'),
+    apiKey:     str('WEB_SEARCH_API_KEY'),
+    engine:     str('WEB_SEARCH_ENGINE', 'search_std'),
+    count:      int('WEB_SEARCH_COUNT', 5),
+    timeoutMs:  int('WEB_SEARCH_TIMEOUT_MS', 15000),
+    recency:    str('WEB_SEARCH_RECENCY_FILTER', 'noLimit'),
+    contentSize: str('WEB_SEARCH_CONTENT_SIZE', 'medium'),
+    userId:     str('WEB_SEARCH_USER_ID', 'ai-radio-station'),
+    domainFilter: str('WEB_SEARCH_DOMAIN_FILTER'),
   },
 
   state: {
@@ -128,5 +154,8 @@ export function assertConfig() {
   }
   if (config.tts.provider === 'youdao' && !config.tts.youdao.appKey) {
     console.warn('[config] TTS_PROVIDER=youdao but YOUDAO_TTS_APP_KEY is missing');
+  }
+  if (config.webSearch.provider === 'zhipu' && !config.webSearch.apiKey) {
+    console.warn('[config] WEB_SEARCH_PROVIDER=zhipu but WEB_SEARCH_API_KEY is missing');
   }
 }

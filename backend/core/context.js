@@ -31,6 +31,7 @@ export async function buildContext(userInput, env = {}) {
   const envBlock = [
     `当前时间：${formatTime()}`,
     `天气：${env.weather || '未知'}`,
+    `当前播放：${formatCurrentSong(env.currentSong)}`,
     `日程：${env.calendar || todayPlan}`,
   ].join('\n');
 
@@ -46,6 +47,7 @@ export async function buildContext(userInput, env = {}) {
     formatProfileForPrompt(profile),
     '\n---\n## 环境',
     envBlock,
+    formatWebSearchContext(env.webSearch),
     '\n## 最近播放（避免重复）',
     recent,
   ].join('\n');
@@ -54,4 +56,39 @@ export async function buildContext(userInput, env = {}) {
   if (userInput) messages.push({ role: 'user', content: userInput });
 
   return { systemPrompt, messages };
+}
+
+function formatCurrentSong(song) {
+  if (!song?.name) return '无';
+  const parts = [
+    `${song.name} - ${song.artist || '未知艺人'}`,
+    song.album ? `专辑：${song.album}` : '',
+    song.raw ? `原始搜索：${song.raw}` : '',
+  ].filter(Boolean);
+  return parts.join('；');
+}
+
+function formatWebSearchContext(search) {
+  if (!search?.results?.length) return '';
+
+  const lines = [
+    '\n## 联网搜索结果',
+    '以下是实时搜索摘要。涉及最新榜单、热门歌曲或歌曲背景时，优先使用这些结果；如果结果不足或互相矛盾，请明确说明不确定，不要编造。',
+    `搜索词：${search.query}`,
+    search.intent?.keywords ? `搜索关键词：${search.intent.keywords}` : '',
+    ...search.results.slice(0, 6).map((result, index) => [
+      `${index + 1}. ${result.title || '未命名结果'}`,
+      result.media ? `来源：${result.media}` : '',
+      result.publishDate ? `时间：${result.publishDate}` : '',
+      result.content ? `摘要：${trimForPrompt(result.content, 260)}` : '',
+      result.link ? `链接：${result.link}` : '',
+    ].filter(Boolean).join('\n')),
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
+function trimForPrompt(text, maxLength) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }

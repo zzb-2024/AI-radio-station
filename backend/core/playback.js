@@ -38,6 +38,7 @@ export class Playback {
     this.currentIndex = -1;
     this.nowPlaying = null;
     this._resetDjState();
+    this.clearDjPreview();
   }
 
   playIndex(index, { broadcast = true, countDjProgress = true } = {}) {
@@ -85,6 +86,27 @@ export class Playback {
     this._dj.nextGap = this._pickDjGap();
   }
 
+  markDjPreview(songId) {
+    if (!songId) return;
+    this._dj.previewSongId = songId;
+  }
+
+  consumeDjPreview(songId) {
+    if (!songId) return false;
+    if (this._dj.previewSongId === songId) {
+      this._dj.previewSongId = null;
+      return true;
+    }
+    if (this._dj.previewSongId && this._dj.previewSongId !== songId) {
+      this._dj.previewSongId = null;
+    }
+    return false;
+  }
+
+  clearDjPreview() {
+    this._dj.previewSongId = null;
+  }
+
   _noteSongChange(song, prevSongId, countDjProgress) {
     if (!song?.id || song.id === prevSongId) return;
     this._dj.lastSongId = song.id;
@@ -99,6 +121,7 @@ export class Playback {
       songsSinceLastSpeak: 0,
       nextGap: this._pickDjGap(),
       lastSongId: null,
+      previewSongId: null,
     };
   }
 

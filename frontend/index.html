@@ -6,7 +6,7 @@
 <title>GPT Neural Radio</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='6' fill='%237CFFB2'/><circle cx='16' cy='16' r='12' fill='none' stroke='%237CFFB2' stroke-opacity='0.3' stroke-width='1'/></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Noto+Sans+SC:wght@300;400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/css/app.css?v=20260511-tech-v19">
+<link rel="stylesheet" href="/css/app.css?v=20260512-audio-v24">
 </head>
 <body>
 
@@ -23,6 +23,7 @@
   <span id="status-actions">
     <span id="status-right">SIGNAL ACTIVE</span>
     <button id="settings-btn" type="button" aria-label="settings" title="User profile">SETTINGS</button>
+    <button id="sound-btn" type="button" aria-label="sound" title="Sound mixer">SOUND</button>
   </span>
 </div>
 
@@ -42,6 +43,7 @@
         <span id="input-prefix">&gt;</span>
         <input id="input" type="text" placeholder="tell me how tonight feels_"
                autocomplete="off" spellcheck="false">
+        <button id="mode-btn" type="button" data-mode="song" aria-pressed="true" title="当前模式：点歌">点歌</button>
         <button id="send-btn">SEND</button>
       </div>
       <div id="tags">
@@ -79,6 +81,7 @@
 
 <audio id="audio"></audio>
 <div id="profile-modal" hidden></div>
-<script type="module" src="/js/app.js?v=20260511-tech-v19"></script>
+<div id="sound-modal" hidden></div>
+<script type="module" src="/js/app.js?v=20260512-audio-v24"></script>
 </body>
 </html>

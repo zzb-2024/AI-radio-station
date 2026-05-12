@@ -5,6 +5,15 @@
 import { CONFIG } from './config.js';
 import { api } from './api.js';
 
+const DEFAULT_AUDIO_SETTINGS = {
+  musicVolume: 1,
+  ttsBoostGain: CONFIG.audio.ttsBoostGain,
+  ttsDuckVolume: CONFIG.audio.ttsDuckVolume,
+  musicFadeMs: CONFIG.audio.musicFadeMs,
+  ttsFadeMs: CONFIG.audio.ttsFadeMs,
+  ttsRestoreDelayMs: CONFIG.audio.ttsRestoreDelayMs,
+};
+
 export class Player {
   /**
    * @param {HTMLAudioElement} audioEl
@@ -27,15 +36,22 @@ export class Player {
     this._ttsRestoreTimer = null;
     this._ttsAudioContext = null;
     this._ttsBoost = null;
+    this._djPreview = null;
+    this._djPreviewKey = '';
+    this._djPreviewInFlight = null;
+    this._djPreviewPlayedKey = '';
+    this._djPreviewRetryAt = 0;
+    this.audioSettings = normalizeAudioSettings(DEFAULT_AUDIO_SETTINGS);
 
     // UI events
     audioEl.addEventListener('play',  () => ui.btnPlay.textContent = '⏸');
     audioEl.addEventListener('pause', () => ui.btnPlay.textContent = '▶');
-    audioEl.addEventListener('ended', () => this.requestNext());
+    audioEl.addEventListener('ended', () => this._handleMainEnded());
     audioEl.addEventListener('timeupdate', () => {
       if (audioEl.duration) {
         ui.progressBar.style.width = (audioEl.currentTime / audioEl.duration * 100) + '%';
       }
+      this._maybePlayDjPreview();
     });
 
     ui.btnPlay.addEventListener('click', () => this.toggle());
@@ -46,10 +62,59 @@ export class Player {
       const r = e.currentTarget.getBoundingClientRect();
       audioEl.currentTime = (e.clientX - r.left) / r.width * audioEl.duration;
     });
+
+    this.setAudioSettings(this.audioSettings);
   }
 
   on(event, fn) { (this._listeners[event] ||= []).push(fn); }
   _emit(event, arg) { (this._listeners[event] || []).forEach(fn => fn(arg)); }
+
+  setAudioSettings(settings = {}) {
+    const next = normalizeAudioSettings({
+      ...this.audioSettings,
+      ...settings,
+    });
+    this.audioSettings = next;
+
+    if (this.tts) {
+      if (this._preDuckVolume != null) {
+        this._preDuckVolume = next.musicVolume;
+        this._fadeValue({
+          slot: 'main',
+          read: () => this.audio.volume,
+          write: v => { this.audio.volume = v; },
+          target: clamp(next.musicVolume * next.ttsDuckVolume, 0, 1),
+          durationMs: next.musicFadeMs,
+          min: 0,
+          max: 1,
+        });
+      } else {
+        this.audio.volume = next.musicVolume;
+      }
+
+      if (this._ttsBoost) {
+        this._fadeValue({
+          slot: 'tts',
+          read: () => this._ttsBoost.gain.gain.value,
+          write: v => { this._ttsBoost.gain.gain.value = v; },
+          target: next.ttsBoostGain,
+          durationMs: next.ttsFadeMs,
+          min: 0,
+          max: 4,
+        });
+      } else if (this.tts) {
+        this.tts.volume = 1;
+      }
+      return;
+    }
+
+    if (this._preDuckVolume != null) this._preDuckVolume = next.musicVolume;
+    this.audio.volume = next.musicVolume;
+  }
+
+  getAudioSettings() {
+    return { ...this.audioSettings };
+  }
 
   syncState(state, { autoplay = false } = {}) {
     const hasQueue = Array.isArray(state?.queue);
@@ -85,15 +150,32 @@ export class Player {
     const sameSrc = currentSrc === nextSong.url;
 
     if (selectionChanged) {
+      this._resetDjPreview();
       this._stopTTS();
       if (!sameSrc) this.audio.src = nextSong.url;
       this._updateNowUI(nextSong);
       this._emit('song-change', nextSong);
+      this._prefetchDjPreview();
     }
 
     if (autoplay && (!sameSrc || this.audio.paused)) {
       if (!sameSrc) this.audio.src = nextSong.url;
+      if (selectionChanged) {
+        this._cancelFade('main');
+        this.audio.volume = 0;
+      }
       this.audio.play().catch(() => {});
+      if (selectionChanged) {
+        this._fadeValue({
+          slot: 'main',
+          read: () => this.audio.volume,
+          write: v => { this.audio.volume = v; },
+          target: this.audioSettings.musicVolume,
+          durationMs: this.audioSettings.musicFadeMs,
+          min: 0,
+          max: 1,
+        });
+      }
     }
   }
 
@@ -113,16 +195,19 @@ export class Player {
   }
 
   async requestPlayIdx(i) {
+    this._stopTTS();
     const state = await api.play('index', i).catch(() => null);
     if (state) this.syncState(state, { autoplay: true });
   }
 
   async requestNext() {
+    this._stopTTS();
     const state = await api.next().catch(() => null);
     if (state) this.syncState(state, { autoplay: true });
   }
 
   async requestPrev() {
+    this._stopTTS();
     const state = await api.prev().catch(() => null);
     if (state?.nowPlaying?.url) {
       this.syncState(state, { autoplay: true });
@@ -132,7 +217,7 @@ export class Player {
   }
 
   playTTS(url) {
-    void this._playTTS(url);
+    return this._playTTS(url);
   }
 
   async _playTTS(url) {
@@ -152,7 +237,7 @@ export class Player {
       if (this.tts !== tts) return;
       this.tts = null;
       this._detachTtsBoost();
-      this._ttsRestoreTimer = setTimeout(() => this._restoreMainAudio(), CONFIG.audio.ttsRestoreDelayMs);
+      this._ttsRestoreTimer = setTimeout(() => this._restoreMainAudio(), this.audioSettings.ttsRestoreDelayMs);
     };
 
     tts.addEventListener('ended', finish, { once: true });
@@ -165,10 +250,10 @@ export class Player {
           slot: 'tts',
           read: () => boost.gain.gain.value,
           write: v => { boost.gain.gain.value = v; },
-          target: CONFIG.audio.ttsBoostGain,
-          durationMs: CONFIG.audio.ttsFadeMs,
+          target: this.audioSettings.ttsBoostGain,
+          durationMs: this.audioSettings.ttsFadeMs,
           min: 0,
-          max: 2,
+          max: 4,
         });
       } else {
         this._fadeValue({
@@ -176,14 +261,89 @@ export class Player {
           read: () => tts.volume,
           write: v => { tts.volume = v; },
           target: 1,
-          durationMs: CONFIG.audio.ttsFadeMs,
+          durationMs: this.audioSettings.ttsFadeMs,
           min: 0,
           max: 1,
         });
       }
+      return true;
     } catch {
       finish();
+      return false;
     }
+  }
+
+  _prefetchDjPreview() {
+    const key = this._djPreviewKeyForCurrent();
+    if (!key || this._djPreviewInFlight) return;
+    if (this._djPreviewKey === key && this._djPreview) return;
+    if (this._djPreviewKey === key && Date.now() < this._djPreviewRetryAt) return;
+
+    this._djPreviewKey = key;
+    this._djPreview = null;
+    const request = api.djPreview()
+      .then(data => {
+        if (this._djPreviewKey !== key) return;
+        if (!data?.preview || !data.ttsUrl || data.currentSongId !== this.currentSong?.id) {
+          this._djPreviewRetryAt = Date.now() + 5000;
+          return;
+        }
+        this._djPreview = { ...data, key };
+        this._djPreviewRetryAt = 0;
+        this._maybePlayDjPreview();
+      })
+      .catch(error => {
+        this._djPreviewRetryAt = Date.now() + 5000;
+        console.warn('[dj-preview]', error.message);
+      })
+      .finally(() => {
+        if (this._djPreviewInFlight === request) this._djPreviewInFlight = null;
+      });
+
+    this._djPreviewInFlight = request;
+  }
+
+  _maybePlayDjPreview() {
+    if (!this.currentSong?.id || !this.audio.duration || this.audio.paused) return;
+    if (this.tts) return;
+
+    const remainingMs = (this.audio.duration - this.audio.currentTime) * 1000;
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0 || remainingMs > CONFIG.audio.djLeadInMs) return;
+
+    const key = this._djPreviewKeyForCurrent();
+    if (!key || this._djPreviewPlayedKey === key) return;
+    if (!this._djPreview && !this._djPreviewInFlight) this._prefetchDjPreview();
+    if (!this._djPreview?.ttsUrl || this._djPreview.key !== key) return;
+
+    this._djPreviewPlayedKey = key;
+    this._emit('dj-preview', this._djPreview);
+  }
+
+  _handleMainEnded() {
+    if (this.tts) this._stopTTS();
+    void this.requestNext();
+  }
+
+  _djPreviewKeyForCurrent() {
+    const nextSong = this._nextPlayableSong();
+    if (!this.currentSong?.id || !nextSong?.id) return '';
+    return `${this.currentSong.id}->${nextSong.id}`;
+  }
+
+  _nextPlayableSong() {
+    const start = this.idx < 0 ? 0 : this.idx + 1;
+    for (let i = start; i < this.queue.length; i += 1) {
+      if (this.queue[i]?.url) return this.queue[i];
+    }
+    return null;
+  }
+
+  _resetDjPreview() {
+    this._djPreview = null;
+    this._djPreviewKey = '';
+    this._djPreviewInFlight = null;
+    this._djPreviewPlayedKey = '';
+    this._djPreviewRetryAt = 0;
   }
 
   _updateNowUI(s) {
@@ -195,17 +355,14 @@ export class Player {
   _duckMainAudio() {
     if (!this.audio.src || this.audio.paused) return;
     if (this._preDuckVolume == null) {
-      const activeFadeTarget = this._volumeTweens.main?.target;
-      this._preDuckVolume = activeFadeTarget > this.audio.volume
-        ? activeFadeTarget
-        : this.audio.volume;
+      this._preDuckVolume = this.audioSettings.musicVolume;
     }
     this._fadeValue({
       slot: 'main',
       read: () => this.audio.volume,
       write: v => { this.audio.volume = v; },
-      target: Math.min(this._preDuckVolume, CONFIG.audio.ttsDuckVolume),
-      durationMs: CONFIG.audio.musicFadeMs,
+      target: clamp(this._preDuckVolume * this.audioSettings.ttsDuckVolume, 0, 1),
+      durationMs: this.audioSettings.musicFadeMs,
       min: 0,
       max: 1,
     });
@@ -220,7 +377,7 @@ export class Player {
       read: () => this.audio.volume,
       write: v => { this.audio.volume = v; },
       target,
-      durationMs: CONFIG.audio.musicFadeMs,
+      durationMs: this.audioSettings.musicFadeMs,
       min: 0,
       max: 1,
     });
@@ -322,6 +479,22 @@ export class Player {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeAudioSettings(input = {}) {
+  return {
+    musicVolume: clamp(numberOr(input.musicVolume, DEFAULT_AUDIO_SETTINGS.musicVolume), 0, 1),
+    ttsBoostGain: clamp(numberOr(input.ttsBoostGain, DEFAULT_AUDIO_SETTINGS.ttsBoostGain), 0, 4),
+    ttsDuckVolume: clamp(numberOr(input.ttsDuckVolume, DEFAULT_AUDIO_SETTINGS.ttsDuckVolume), 0, 1),
+    musicFadeMs: clamp(numberOr(input.musicFadeMs, DEFAULT_AUDIO_SETTINGS.musicFadeMs), 0, 2000),
+    ttsFadeMs: clamp(numberOr(input.ttsFadeMs, DEFAULT_AUDIO_SETTINGS.ttsFadeMs), 0, 2000),
+    ttsRestoreDelayMs: clamp(numberOr(input.ttsRestoreDelayMs, DEFAULT_AUDIO_SETTINGS.ttsRestoreDelayMs), 0, 2000),
+  };
+}
+
+function numberOr(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function easeInOutCubic(t) {

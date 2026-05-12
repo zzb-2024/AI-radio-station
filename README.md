@@ -28,8 +28,8 @@ AI电台/
 │   │   ├── openai.js         GPT-5.5 对话
 │   │   ├── ncm.js            网易云搜歌 / 播放地址 / 歌词 / 详情
 │   │   ├── weapi.js          weapi 加密（VIP fallback）
-│   │   ├── tts.js            Fish Audio TTS
-│   │   └── weather.js        OpenWeather
+│   │   ├── tts.js            Fish Audio / 有道 TTS
+│   │   └── weather.js        彩云天气 / OpenWeather
 │   └── core/                 业务核心
 │       ├── context.js        system prompt 组装
 │       ├── intent.js         意图路由（直接搜歌 vs AI 规划）
@@ -72,7 +72,7 @@ AI电台/
 
 - **Node.js ≥ 20.6**（用到 `--env-file` 原生支持）
 - 一个 OpenAI API key（官方或 OpenAI 兼容代理都行）
-- 可选：网易云黑胶账号 cookie（解锁 VIP），Fish Audio TTS key，OpenWeather key
+- 可选：网易云黑胶账号 cookie（解锁 VIP），TTS key，彩云天气 key
 
 ## 快速开始
 
@@ -108,8 +108,11 @@ npm start
 | `OPENAI_REASONING_EFFORT` | 否 | 默认 `low`，可设 `high` |
 | `NCM_MUSIC_U` | 否 | 网易云登录 cookie，**解锁 VIP** |
 | `NCM_CSRF` | 否 | 配合 `NCM_MUSIC_U` 一起使用 |
-| `FISH_API_KEY` | 否 | 有则启用 TTS；无则跳过 |
-| `OPENWEATHER_KEY` | 否 | 有则把天气传给 AI 当上下文 |
+| `TTS_PROVIDER` | 否 | `youdao` / `fish` / `auto`，有配置则启用 AI 口播 |
+| `CAIYUN_APP_KEY` | 否 | 彩云天气 App Key，有则把天气传给 AI 当上下文 |
+| `CAIYUN_APP_SECRET` | 否 | 彩云天气 App Secret，推荐配置，用于签名鉴权 |
+| `WEATHER_CITY` | 否 | 默认 `合肥` |
+| `WEATHER_LONGITUDE` / `WEATHER_LATITUDE` | 否 | 天气坐标，默认合肥 |
 | `SCHEDULER_ENABLED` | 否 | `false` 可关闭定时播报 |
 
 ### 拿到 `NCM_MUSIC_U`

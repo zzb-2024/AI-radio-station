@@ -57,7 +57,7 @@ export const config = {
       appSecret: str('YOUDAO_TTS_APP_SECRET'),
       voiceName: str('YOUDAO_TTS_VOICE_NAME', 'youxiaoxun'),
       speed:     str('YOUDAO_TTS_SPEED', '1'),
-      volume:    str('YOUDAO_TTS_VOLUME', '1.00'),
+      volume:    str('YOUDAO_TTS_VOLUME', '1.50'),
     },
   },
 
@@ -69,9 +69,17 @@ export const config = {
   },
 
   weather: {
-    apiKey:    str('OPENWEATHER_KEY'),
-    city:      str('WEATHER_CITY', 'Beijing'),
-    timeoutMs: int('WEATHER_TIMEOUT_MS', 5000),
+    provider:     str('WEATHER_PROVIDER', 'caiyun'),
+    city:         str('WEATHER_CITY', '合肥'),
+    longitude:    str('WEATHER_LONGITUDE', '117.2272'),
+    latitude:     str('WEATHER_LATITUDE', '31.8206'),
+    timeoutMs:    int('WEATHER_TIMEOUT_MS', 5000),
+    openWeatherKey: str('OPENWEATHER_KEY'),
+    caiyun: {
+      appKey:    str('CAIYUN_APP_KEY'),
+      appSecret: str('CAIYUN_APP_SECRET'),
+      token:     str('CAIYUN_TOKEN'),
+    },
   },
 
   state: {

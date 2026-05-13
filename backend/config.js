@@ -42,7 +42,7 @@ export const config = {
     timeoutMs: int('NCM_TIMEOUT_MS', 8000),
     bitrate:   str('NCM_BITRATE', 'hires'),
     bitrateFallbacks: str('NCM_BITRATE_FALLBACKS', 'jyeffect,exhigh,standard'),
-    toplistTrackLimit: int('NCM_TOPLIST_TRACK_LIMIT', 5),
+    toplistTrackLimit: int('NCM_TOPLIST_TRACK_LIMIT', 10),
   },
 
   ncmOpenapi: {
@@ -111,11 +111,12 @@ export const config = {
   state: {
     maxPlays:    int('STATE_MAX_PLAYS', 500),
     maxMessages: int('STATE_MAX_MESSAGES', 50),
+    maxSkips:    int('STATE_MAX_SKIPS', 300),
   },
 
   queue: {
     searchLimitPerItem: int('QUEUE_SEARCH_LIMIT', 1),
-    directSearchLimit:  int('DIRECT_SEARCH_LIMIT', 3),
+    directSearchLimit:  int('DIRECT_SEARCH_LIMIT', 10),
   },
 
   scheduler: {

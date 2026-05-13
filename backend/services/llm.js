@@ -7,6 +7,8 @@ import { buildContext } from '../core/context.js';
 import { state } from '../core/state.js';
 import { completeOpenAI, hasOpenAIConfig } from './openai.js';
 
+const DEFAULT_PLAN_PLAY_COUNT = 10;
+
 const RADIO_PLAN_OUTPUT_CONTRACT = [
   '',
   '---',
@@ -15,6 +17,7 @@ const RADIO_PLAN_OUTPUT_CONTRACT = [
   '- 不要 markdown 代码块，不要解释，不要前后缀文字。',
   '- JSON 字段必须且只能包含：say, play, reason, segue。',
   '- play 必须是字符串数组，元素格式是“歌曲名 - 艺术家”。',
+  '- 点歌、推歌、榜单规划时，play 默认给满 10 首；除非用户明确指定更少数量，不要只给少量曲目。',
   '- 选曲必须优先遵守长期用户画像，尤其是避免内容、场景偏好和 DJ 风格。',
   '- 遇到天气、心情、场景化点歌时，say 要自然承接氛围，不要复述用户整句，也不要说“为你播放 + 原话”。',
 ].join('\n');
@@ -32,6 +35,25 @@ const RADIO_CHAT_SYSTEM = [
   '回复控制在 120 个中文字以内，适合被 TTS 朗读。',
 ].join('\n');
 
+const MUSIC_REQUEST_ANALYSIS_SYSTEM = [
+  '',
+  '---',
+  '你是一个中文电台的点歌理解器，不是最终播报者。',
+  '你的任务是先读懂用户这句话到底想做什么，再把它翻译成结构化 JSON。',
+  '只输出单个合法 JSON 对象，不要 markdown，不要解释，不要多余文字。',
+  '字段只能包含：intent, confidence, count, exactQuery, toplistName, recommendationQuery, searchQueries, mood, scene, genre, avoid, reason。',
+  'intent 只能是 exact_song / toplist / recommend / chat。',
+  'count 是推荐播放首数；用户没有明确说少于 10 首时，默认填 10。',
+  'exactQuery 是最适合拿去搜歌的关键词；如果用户明确说了歌名、歌手、专辑或版本，优先合成最短最稳的查询。',
+  'toplistName 是榜单名称；如果用户提到榜单，就尽量保留原样。',
+  'recommendationQuery 是你对整句需求的自然理解，偏向用于推荐，不要机械复述原话。',
+  'searchQueries 最多 5 个，按优先级排序，尽量从最可能命中的搜索词开始。',
+  'mood / scene / genre / avoid 尽量短，能空就空。',
+  '如果用户明显在问当前播放歌曲的背景、作者、创作状态或歌词含义，intent 用 chat。',
+  '如果用户说“来几首 / 换几首 / 给我点歌”这类话，默认不要把它理解成少量，除非明确写了数字。',
+  '如果用户同时有歌名和风格要求，优先保留歌名，再把风格放到 recommendationQuery 或 searchQueries。',
+].join('\n');
+
 export async function askRadioPlan(userInput, env = {}) {
   const { systemPrompt, messages } = await buildContext(userInput, env);
   const raw = await completeText({
@@ -41,9 +63,27 @@ export async function askRadioPlan(userInput, env = {}) {
     maxTokens: config.openai.maxTokens,
   });
 
-  const result = parsePlanPayload(raw);
+  const result = await ensurePlanPlayCount({
+    userInput,
+    systemPrompt,
+    messages,
+    raw,
+    result: parsePlanPayload(raw),
+  });
   await state.addConversationTurn(userInput || '(auto)', JSON.stringify(result));
   return result;
+}
+
+export async function analyzeMusicRequest(userInput, env = {}) {
+  const { systemPrompt, messages } = await buildContext(userInput, env);
+  const raw = await completeText({
+    label: 'intent',
+    systemPrompt: `${systemPrompt}${MUSIC_REQUEST_ANALYSIS_SYSTEM}`,
+    messages: messages.slice(-1),
+    maxTokens: 320,
+  });
+
+  return normalizeMusicRequestResult(parseMusicRequestPayload(raw), userInput);
 }
 
 export async function askRadioChat(userInput, env = {}, { allowPlanFallback = false } = {}) {
@@ -168,6 +208,173 @@ function normalizePlanResult(result) {
     reason: typeof result.reason === 'string' ? result.reason.trim() : '',
     segue: typeof result.segue === 'string' ? result.segue.trim() : '',
   };
+}
+
+function parseMusicRequestPayload(text) {
+  const candidates = [text, extractCodeBlock(text), extractJSONObject(text)].filter(Boolean);
+
+  for (const raw of candidates) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // 继续尝试下一种候选格式
+    }
+  }
+
+  throw new Error(`LLM: no valid JSON in music analysis response: ${String(text).slice(0, 200)}`);
+}
+
+function normalizeMusicRequestResult(result, userInput = '') {
+  const source = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+  const fallbackIntent = deriveFallbackMusicIntent(userInput);
+  const intent = normalizeMusicIntent(source.intent) || fallbackIntent;
+  const count = normalizeMusicCount(source.count, userInput);
+  const exactQuery = normalizeShortText(source.exactQuery);
+  const toplistName = normalizeShortText(source.toplistName);
+  const recommendationQuery = normalizeShortText(source.recommendationQuery);
+  const searchQueries = normalizeStringList(source.searchQueries, 5)
+    .filter(Boolean);
+  const mood = normalizeShortText(source.mood);
+  const scene = normalizeShortText(source.scene);
+  const genre = normalizeShortText(source.genre);
+  const avoid = normalizeShortText(source.avoid);
+  const reason = normalizeShortText(source.reason);
+  const confidence = normalizeConfidence(source.confidence);
+
+  return {
+    intent,
+    confidence,
+    count,
+    exactQuery: exactQuery || recommendationQuery || String(userInput || '').trim(),
+    toplistName,
+    recommendationQuery,
+    searchQueries: uniqueStrings([
+      exactQuery,
+      recommendationQuery,
+      ...searchQueries,
+      toplistName,
+      String(userInput || '').trim(),
+    ], 5),
+    mood,
+    scene,
+    genre,
+    avoid,
+    reason,
+  };
+}
+
+function normalizeMusicIntent(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (['exact_song', 'toplist', 'recommend', 'chat'].includes(text)) return text;
+  return '';
+}
+
+function normalizeMusicCount(value, userInput = '') {
+  const number = Number(value);
+  if (Number.isFinite(number) && number > 0) return Math.max(1, Math.min(20, Math.round(number)));
+  return extractRequestedPlayCount(userInput) || DEFAULT_PLAN_PLAY_COUNT;
+}
+
+function normalizeConfidence(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0.5;
+  return Math.max(0, Math.min(1, number));
+}
+
+function normalizeShortText(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.slice(0, 120);
+}
+
+function normalizeStringList(value, limit = 5) {
+  const list = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[，,、;；\n]/) : [];
+  return list.map(item => String(item || '').trim()).filter(Boolean).slice(0, limit);
+}
+
+function uniqueStrings(values, limit = 5) {
+  const seen = new Set();
+  const output = [];
+  for (const value of values) {
+    const text = normalizeShortText(value);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(text);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+function deriveFallbackMusicIntent(userInput) {
+  const text = String(userInput || '').trim();
+  if (!text) return 'chat';
+  if (/(榜单|榜上|上榜|热歌榜|新歌榜|飙升榜|电音榜|国风榜|古风榜|说唱榜|民谣榜|摇滚榜|欧美热歌榜|实时热度榜|黑胶VIP|KTV唛榜|Beatport|Oricon|Billboard|UK排行榜)/i.test(text)) {
+    return 'toplist';
+  }
+  if (/(背景|故事|创作|写的|写作|灵感|状态|采访|专辑|歌词|含义|表达|作者|作词|作曲|制作人|什么时候|为什么|介绍|讲讲|说说)/i.test(text)) {
+    return 'chat';
+  }
+  if (/(推荐|给我来|来几首|来点|来些|放点|放些|听点|想听|换几首|换点|找点|歌单|音乐|歌曲)/i.test(text)) {
+    return 'recommend';
+  }
+  return 'recommend';
+}
+
+async function ensurePlanPlayCount({ userInput, systemPrompt, messages, raw, result }) {
+  const requestedCount = extractRequestedPlayCount(userInput);
+  const targetCount = requestedCount || DEFAULT_PLAN_PLAY_COUNT;
+  if (requestedCount && requestedCount < DEFAULT_PLAN_PLAY_COUNT) return result;
+  if (!result?.play?.length || result.play.length >= targetCount) return result;
+
+  try {
+    const retryRaw = await completeText({
+      label: 'plan-count',
+      systemPrompt: [
+        `${systemPrompt}${RADIO_PLAN_OUTPUT_CONTRACT}`,
+        '',
+        `数量修正：用户没有明确要求更少数量，play 必须给满 ${targetCount} 首。`,
+      ].join('\n'),
+      messages: [
+        ...messages.slice(-1),
+        { role: 'assistant', content: raw },
+        {
+          role: 'user',
+          content: `上一次 play 只有 ${result.play.length} 首。保持同一个点歌需求，重新输出合法 JSON，play 给满 ${targetCount} 首。`,
+        },
+      ],
+      maxTokens: config.openai.maxTokens,
+    });
+
+    const retryResult = parsePlanPayload(retryRaw);
+    return retryResult.play.length > result.play.length ? retryResult : result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[llm:plan-count] keep original plan: ${message}`);
+    return result;
+  }
+}
+
+function extractRequestedPlayCount(input) {
+  const text = String(input || '').trim();
+  const arabic = text.match(/(\d{1,2})\s*首/);
+  if (arabic) return Number(arabic[1]);
+
+  const chineseDigits = {
+    一: 1,
+    两: 2,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10,
+  };
+  const chinese = text.match(/([一两二三四五六七八九十])\s*首/);
+  return chinese ? chineseDigits[chinese[1]] || null : null;
 }
 
 function deriveFailureHint(message) {

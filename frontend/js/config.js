@@ -26,7 +26,7 @@ export const CONFIG = {
     musicFadeMs: 420,
     ttsFadeMs: 160,
     ttsRestoreDelayMs: 140,
-    djLeadInMs: 3000,
+    djLeadInMs: 6000,
   },
   ui: {
     loadingMs: 1300,

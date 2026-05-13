@@ -47,6 +47,7 @@ export async function buildContext(userInput, env = {}) {
     formatProfileForPrompt(profile),
     '\n---\n## 环境',
     envBlock,
+    formatMusicPlanContext(env.musicPlan),
     formatWebSearchContext(env.webSearch),
     '\n## 最近播放（避免重复）',
     recent,
@@ -66,6 +67,30 @@ function formatCurrentSong(song) {
     song.raw ? `原始搜索：${song.raw}` : '',
   ].filter(Boolean);
   return parts.join('；');
+}
+
+function formatMusicPlanContext(plan) {
+  if (!plan || typeof plan !== 'object') return '';
+
+  const lines = [
+    '\n## 点歌理解器给出的结构化意图',
+    '这是对用户原话的理解，选曲时优先遵守；它不是最终歌单。',
+    plan.intent ? `意图：${plan.intent}` : '',
+    plan.count ? `期望数量：${plan.count}` : '',
+    plan.exactQuery ? `精确搜歌关键词：${plan.exactQuery}` : '',
+    plan.toplistName ? `榜单方向：${plan.toplistName}` : '',
+    plan.recommendationQuery ? `推荐方向：${plan.recommendationQuery}` : '',
+    plan.genre ? `曲风：${plan.genre}` : '',
+    plan.mood ? `情绪：${plan.mood}` : '',
+    plan.scene ? `场景：${plan.scene}` : '',
+    plan.avoid ? `避免：${plan.avoid}` : '',
+    Array.isArray(plan.searchQueries) && plan.searchQueries.length
+      ? `候选搜索词：${plan.searchQueries.join(' / ')}`
+      : '',
+    plan.reason ? `理解理由：${plan.reason}` : '',
+  ].filter(Boolean);
+
+  return lines.join('\n');
 }
 
 function formatWebSearchContext(search) {

@@ -24,6 +24,8 @@ const DEFAULT_AUTO_PROFILE = {
     playEvents: 0,
     chatEvents: 0,
     toplistEvents: 0,
+    skipEvents: 0,
+    skipReasonEvents: 0,
   },
   evidence: [],
 };
@@ -83,9 +85,20 @@ export async function learnProfileFromConversation(userInput, assistantOutput = 
   return appendAutoEvidence(evidence, { chatEvents: 1 });
 }
 
-export function buildProfileSuggestion(profile, recentPlays = []) {
+export async function learnProfileFromSkip(song, context = {}) {
+  const evidence = buildSkipEvidence(song, context);
+  return appendAutoEvidence(evidence, { skipEvents: evidence.length ? 1 : 0 });
+}
+
+export async function learnProfileFromSkipReason(userInput, skipEvent = null, context = {}) {
+  const evidence = buildSkipReasonEvidence(userInput, skipEvent, context);
+  return appendAutoEvidence(evidence, { skipReasonEvents: evidence.length ? 1 : 0 });
+}
+
+export function buildProfileSuggestion(profile, recentPlays = [], recentSkips = []) {
   const current = normalizeProfile(profile);
   const recent = Array.isArray(recentPlays) ? recentPlays : [];
+  const skips = Array.isArray(recentSkips) ? recentSkips : [];
   const derived = deriveAutoProfile(current.auto);
   const artists = countArtists(recent);
   const topArtists = artists.slice(0, 6).map(item => item.name);
@@ -93,6 +106,18 @@ export function buildProfileSuggestion(profile, recentPlays = []) {
   const recentSongs = recent.slice(0, 8)
     .map(item => `${item.song}${item.artist ? ` - ${item.artist}` : ''}`)
     .filter(Boolean);
+  const recentSkippedSongs = skips.slice(0, 6)
+    .map(item => `${item.song}${item.artist ? ` - ${item.artist}` : ''}`)
+    .filter(Boolean);
+  const skipAvoidCandidates = uniqueList(
+    skips.flatMap(skip => extractSkipReasonLabels([
+      skip?.reasonText || '',
+      skip?.requestText || '',
+      skip?.song ? `${skip.song}${skip.artist ? ` - ${skip.artist}` : ''}` : '',
+    ].join(' ')))
+      .filter(label => label.kind === 'avoid')
+      .map(label => label.value)
+  );
 
   const patch = {
     taste: { ...current.taste },
@@ -140,12 +165,29 @@ export function buildProfileSuggestion(profile, recentPlays = []) {
     reasons.push('自动学习到切歌过渡偏好');
   }
 
+  const avoidCandidates = uniqueList([
+    ...splitList(derived.skip.avoid),
+    ...skipAvoidCandidates,
+  ]);
+  if (avoidCandidates.length) {
+    patch.taste.avoid = mergeList(current.taste.avoid, avoidCandidates);
+    reasons.push(`自动学习到跳过后要避开的类型：${avoidCandidates.join('、')}`);
+  }
+
   if (derived.summary) {
     patch.notes = mergeSentence(current.notes, `自动学习摘要：${derived.summary}`);
     reasons.push('已根据播放和聊天生成自动画像摘要');
   } else if (recentSongs.length) {
     patch.notes = mergeSentence(current.notes, `最近播放倾向：${recentSongs.join('；')}`);
     reasons.push('已根据最近播放生成可确认的偏好笔记');
+  }
+
+  if (recentSkippedSongs.length) {
+    patch.notes = mergeSentence(
+      patch.notes,
+      `近期跳过：${recentSkippedSongs.join('；')}${skips[0]?.reasonText ? `。原因：${skips[0].reasonText}` : ''}`
+    );
+    reasons.push('已根据近期跳过记录修正推荐约束');
   }
 
   return {
@@ -157,6 +199,7 @@ export function buildProfileSuggestion(profile, recentPlays = []) {
       topArtists: artists.slice(0, 8),
       autoEvidence: current.auto.evidence.length,
       autoSummary: derived.summary,
+      recentSkips: skips.slice(0, 5),
     },
   };
 }
@@ -218,14 +261,22 @@ function deriveAutoProfile(autoInput) {
     transition: take('dj.transition', 3).join('；'),
   };
   const audio = take('audio.balance', 3).join('；');
+  const skip = {
+    avoid: take('skip.avoid', 4).join('；'),
+    contextMismatch: take('skip.contextMismatch', 4).join('；'),
+    transitionMismatch: take('skip.transitionMismatch', 4).join('；'),
+    reason: take('skip.reason', 4).join('；'),
+    quality: take('skip.quality', 3).join('；'),
+  };
 
-  const summary = buildAutoSummary({ taste, scenes, djStyle, audio, context });
+  const summary = buildAutoSummary({ taste, scenes, djStyle, audio, skip, context });
 
   return {
     taste,
     scenes,
     djStyle,
     audio,
+    skip,
     context,
     summary,
     updatedAt: auto.updatedAt,
@@ -252,6 +303,11 @@ function formatAutoProfileForPrompt(auto) {
     auto.djStyle.transition ? `- 过渡偏好：${auto.djStyle.transition}` : '',
     auto.djStyle.tone ? `- 交流语气偏好：${auto.djStyle.tone}` : '',
     auto.audio ? `- 音频偏好：${auto.audio}` : '',
+    auto.skip?.reason ? `- 跳过原因：${auto.skip.reason}` : '',
+    auto.skip?.avoid ? `- 跳过后会避开：${auto.skip.avoid}` : '',
+    auto.skip?.contextMismatch ? `- 场景不匹配：${auto.skip.contextMismatch}` : '',
+    auto.skip?.transitionMismatch ? `- 过渡不顺：${auto.skip.transitionMismatch}` : '',
+    auto.skip?.quality ? `- 音质/版本偏好：${auto.skip.quality}` : '',
     ...(auto.context?.weather || []).map(line => `- 天气上下文：${line}`),
     ...(auto.context?.time || []).map(line => `- 时间上下文：${line}`),
   ].filter(Boolean).join('\n');
@@ -262,6 +318,11 @@ async function appendAutoEvidence(entries, statsPatch = {}) {
   const normalized = entries
     .map(entry => normalizeEvidence({ ...entry, at: entry.at || now }))
     .filter(Boolean);
+  const hasStatsUpdate = Object.values(statsPatch).some(value => Number(value) > 0);
+
+  if (!normalized.length && !hasStatsUpdate) {
+    return await readProfileFile();
+  }
 
   return queueProfileWrite(async () => {
     const current = await readProfileFile();
@@ -271,6 +332,8 @@ async function appendAutoEvidence(entries, statsPatch = {}) {
       playEvents: auto.stats.playEvents + numberOr(statsPatch.playEvents, 0),
       chatEvents: auto.stats.chatEvents + numberOr(statsPatch.chatEvents, 0),
       toplistEvents: auto.stats.toplistEvents + numberOr(statsPatch.toplistEvents, 0),
+      skipEvents: auto.stats.skipEvents + numberOr(statsPatch.skipEvents, 0),
+      skipReasonEvents: auto.stats.skipReasonEvents + numberOr(statsPatch.skipReasonEvents, 0),
     };
     auto.updatedAt = normalized.length || Object.keys(statsPatch).length ? now : auto.updatedAt;
     auto.summary = deriveAutoProfile(auto).summary;
@@ -304,6 +367,89 @@ function buildPlayEvidence(song, context = {}) {
   evidence.push(...extractContextEvidence(song, context, source, note, 1.05));
   evidence.push(...extractToplistEvidence(context.toplist, context.requestText, source, note));
   evidence.push(...extractTextSignals(context.requestText || '', source, 1.2));
+  return uniqueEvidence(evidence);
+}
+
+function buildSkipEvidence(song, context = {}) {
+  const evidence = [];
+  const source = text(context.source) || 'skip';
+  const songLine = normalizeSongLine(song);
+  if (!songLine) return evidence;
+
+  const strength = estimateSkipStrength(context);
+  const weight = clamp(0.6 + strength * 1.8, 0.3, 3.2);
+  const note = compactNote([
+    context.requestText,
+    context.reasonText,
+    Array.isArray(context.reasonLabels) ? context.reasonLabels.join(' / ') : '',
+    songLine,
+  ].filter(Boolean).join(' | '));
+
+  evidence.push(makeEvidence('skip.song', songLine, weight, source, note));
+
+  for (const artist of splitArtists(song?.artist)) {
+    evidence.push(makeEvidence('skip.artist', artist, weight * 0.65, source, note));
+  }
+
+  evidence.push(...extractSkipContextEvidence(song, context, source, note, weight));
+
+  const labels = extractSkipReasonLabels([
+    context.reasonText,
+    context.requestText,
+    Array.isArray(context.reasonLabels) ? context.reasonLabels.join(' ') : '',
+  ].join(' '));
+  for (const label of labels) {
+    if (label.kind === 'reason') {
+      evidence.push(makeEvidence('skip.reason', label.value, weight * 1.15, source, note));
+    } else if (label.kind === 'avoid') {
+      evidence.push(makeEvidence('skip.avoid', label.value, weight * 1.1, source, note));
+    } else if (label.kind === 'contextMismatch') {
+      evidence.push(makeEvidence('skip.contextMismatch', label.value, weight * 1.05, source, note));
+    } else if (label.kind === 'transitionMismatch') {
+      evidence.push(makeEvidence('skip.transitionMismatch', label.value, weight * 1.05, source, note));
+    } else if (label.kind === 'quality') {
+      evidence.push(makeEvidence('skip.quality', label.value, weight * 1.05, source, note));
+    }
+  }
+
+  if (labels.length === 0 && strength >= 0.45) {
+    evidence.push(makeEvidence('skip.contextMismatch', describeSkipContext(context), weight, source, note));
+  }
+
+  return uniqueEvidence(evidence);
+}
+
+function buildSkipReasonEvidence(userInput, skipEvent = null, context = {}) {
+  const source = text(context.source) || 'chat';
+  const message = String(userInput || '');
+  const labels = extractSkipReasonLabels(message);
+  if (!labels.length) return [];
+
+  const note = compactNote([
+    message,
+    skipEvent?.song ? `${skipEvent.song}${skipEvent.artist ? ` - ${skipEvent.artist}` : ''}` : '',
+  ].filter(Boolean).join(' | '));
+  const weight = clamp(1.2 + estimateSkipStrength(skipEvent || context), 0.8, 4);
+  const evidence = [];
+
+  for (const label of labels) {
+    if (label.kind === 'reason') {
+      evidence.push(makeEvidence('skip.reason', label.value, weight, source, note));
+    } else if (label.kind === 'avoid') {
+      evidence.push(makeEvidence('skip.avoid', label.value, weight * 1.1, source, note));
+    } else if (label.kind === 'contextMismatch') {
+      evidence.push(makeEvidence('skip.contextMismatch', label.value, weight * 1.05, source, note));
+    } else if (label.kind === 'transitionMismatch') {
+      evidence.push(makeEvidence('skip.transitionMismatch', label.value, weight * 1.05, source, note));
+    } else if (label.kind === 'quality') {
+      evidence.push(makeEvidence('skip.quality', label.value, weight * 1.05, source, note));
+    }
+  }
+
+  if (skipEvent?.song) {
+    evidence.push(makeEvidence('skip.song', `${skipEvent.song}${skipEvent.artist ? ` - ${skipEvent.artist}` : ''}`, weight * 0.75, source, note));
+  }
+
   return uniqueEvidence(evidence);
 }
 
@@ -379,6 +525,31 @@ function extractContextEvidence(song, context = {}, source = 'play', note = '', 
     evidence.push(makeEvidence(`context.time.${timeBucket}.song`, songLine, baseWeight * 1.1, source, note));
     for (const artist of splitArtists(song?.artist)) {
       evidence.push(makeEvidence(`context.time.${timeBucket}.artist`, artist, baseWeight * 0.8, source, note));
+    }
+  }
+
+  return evidence;
+}
+
+function extractSkipContextEvidence(song, context = {}, source = 'skip', note = '', baseWeight = 1) {
+  const evidence = [];
+  const songLine = normalizeSongLine(song);
+  if (!songLine) return evidence;
+
+  const weatherBucket = normalizeWeatherBucket(context.weather);
+  if (weatherBucket) {
+    evidence.push(makeEvidence('skip.contextMismatch', describeWeatherSkip(weatherBucket, context), baseWeight * 1.2, source, note));
+  }
+
+  const timeBucket = normalizeTimeBucket(context.timePart || context.time || context.timestamp);
+  if (timeBucket) {
+    evidence.push(makeEvidence('skip.contextMismatch', describeTimeSkip(timeBucket, context), baseWeight * 1.05, source, note));
+  }
+
+  if (context.requestText) {
+    const textValue = String(context.requestText);
+    if (/(今天|现在|此刻|当下|当前)/.test(textValue)) {
+      evidence.push(makeEvidence('skip.contextMismatch', `当前状态更适合${describeSkipContext(context)}`, baseWeight * 0.9, source, note));
     }
   }
 
@@ -465,7 +636,7 @@ function topValues(bucket, limit) {
     .map(([value]) => value);
 }
 
-function buildAutoSummary({ taste, scenes, djStyle, audio, context }) {
+function buildAutoSummary({ taste, scenes, djStyle, audio, skip, context }) {
   const parts = [];
   if (taste.favoriteGenres) parts.push(`偏好${taste.favoriteGenres}`);
   if (taste.favoriteArtists) parts.push(`常听${taste.favoriteArtists}`);
@@ -483,6 +654,10 @@ function buildAutoSummary({ taste, scenes, djStyle, audio, context }) {
   if (djStyle.transition) parts.push(`过渡上${djStyle.transition}`);
   if (djStyle.tone) parts.push(`交流上${djStyle.tone}`);
   if (audio) parts.push(`音频上${audio}`);
+  if (skip?.reason) parts.push(`跳过原因常见为${skip.reason}`);
+  if (skip?.avoid) parts.push(`跳过后会避开${skip.avoid}`);
+  if (skip?.contextMismatch) parts.push(`场景匹配上${skip.contextMismatch}`);
+  if (skip?.transitionMismatch) parts.push(`衔接上${skip.transitionMismatch}`);
   if (context?.weather?.length) parts.push(`天气场景上${context.weather.join('；')}`);
   if (context?.time?.length) parts.push(`时间场景上${context.time.join('；')}`);
   return parts.join('；').slice(0, 520);
@@ -688,6 +863,15 @@ function normalizeWeatherBucket(value) {
 }
 
 function normalizeTimeBucket(value) {
+  const label = text(value).toLowerCase();
+  if (label === 'morning') return 'morning';
+  if (label === 'forenoon' || label === 'am' || label === 'morningtime') return 'forenoon';
+  if (label === 'noon' || label === 'midday') return 'noon';
+  if (label === 'afternoon') return 'afternoon';
+  if (label === 'evening' || label === 'pm') return 'evening';
+  if (label === 'night') return 'night';
+  if (label === 'latenight' || label === 'late-night' || label === 'late_night') return 'lateNight';
+
   let date = value;
   if (typeof value === 'string' || typeof value === 'number') date = new Date(value);
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) date = new Date();
@@ -699,6 +883,94 @@ function normalizeTimeBucket(value) {
   if (hour >= 18 && hour < 22) return 'evening';
   if (hour >= 22 || hour < 2) return 'lateNight';
   return 'night';
+}
+
+function describeWeatherSkip(bucket, context = {}) {
+  const weather = WEATHER_CONTEXT_LABELS[bucket] || bucket || '当前天气';
+  switch (bucket) {
+    case 'rain':
+      return `${weather}更适合舒缓、低刺激、少鼓点`;
+    case 'snow':
+      return `${weather}更适合安静、留白多一点的歌`;
+    case 'haze':
+    case 'fog':
+      return `${weather}更适合克制、氛围感和一点空间感`;
+    case 'sunny':
+      return `${weather}更适合明亮但不过分刺耳的歌`;
+    case 'cloudy':
+      return `${weather}更适合温和、顺耳、别太炸的歌`;
+    case 'windy':
+      return `${weather}更适合有一点推进感但不喧闹的歌`;
+    default:
+      return text(context.weather || weather);
+  }
+}
+
+function describeTimeSkip(bucket, context = {}) {
+  const time = TIME_CONTEXT_LABELS[bucket] || bucket || '当前时间';
+  switch (bucket) {
+    case 'lateNight':
+      return `${time}更适合安静、克制、少打扰`;
+    case 'night':
+      return `${time}更适合缓一点、别太躁`;
+    case 'evening':
+      return `${time}更适合有余韵、顺滑一点的歌`;
+    case 'morning':
+      return `${time}更适合精神一点但不刺耳的歌`;
+    case 'forenoon':
+    case 'noon':
+    case 'afternoon':
+      return `${time}更适合节奏稳定、容易继续听下去的歌`;
+    default:
+      return text(context.timePart || time);
+  }
+}
+
+function describeSkipContext(context = {}) {
+  const parts = [];
+  const weather = describeWeatherSkip(normalizeWeatherBucket(context.weather), context);
+  const time = describeTimeSkip(normalizeTimeBucket(context.timePart || context.time || context.timestamp), context);
+  if (weather) parts.push(weather);
+  if (time) parts.push(time);
+  const requestText = text(context.requestText);
+  if (requestText) parts.push(`用户当时说的是：${requestText.slice(0, 40)}`);
+  return parts.filter(Boolean).join('；') || '当前状态不匹配';
+}
+
+export function extractSkipReasonLabels(input) {
+  const textValue = String(input || '');
+  if (!textValue.trim()) return [];
+
+  const labels = [];
+  const rules = [
+    { regex: /(太吵|太闹|太躁|太炸|高频|刺耳|太响|声音太大|鼓点太重)/i, kind: 'avoid', value: '高能量、强鼓点或高频刺激的歌' },
+    { regex: /(太慢|没劲|没推进|拖沓|无聊|没精神|太平)/i, kind: 'contextMismatch', value: '需要更有推进感、别太慢' },
+    { regex: /(不适合|不合适|不对味|不对劲|感觉不对|不是这个感觉|气氛不对)/i, kind: 'contextMismatch', value: '当前场景和氛围不匹配' },
+    { regex: /(切换太突兀|太突兀|太生硬|切太快|别生硬|衔接不好|过渡不好|上一首接不上|断了|卡顿)/i, kind: 'transitionMismatch', value: '衔接要更自然、别硬切' },
+    { regex: /(音质差|音质不太行|音质不好|糊|太糊|破音|听不清|版本不对|版本不太行|翻唱|伴奏版|现场版|live版|demo)/i, kind: 'quality', value: '音质或版本不理想' },
+    { regex: /(重复|听腻|腻了|又来|老是|太熟|听太多)/i, kind: 'avoid', value: '最近重复播放太多，会疲劳' },
+    { regex: /(太安静|太闷|没氛围|太空|太淡)/i, kind: 'contextMismatch', value: '需要一点存在感或氛围推进' },
+  ];
+
+  for (const rule of rules) {
+    if (!rule.regex.test(textValue)) continue;
+    labels.push(rule);
+  }
+
+  return labels;
+}
+
+export function estimateSkipStrength(input) {
+  const playedMs = numberOr(input?.playedMs, 0);
+  const durationMs = numberOr(input?.durationMs, 0);
+  const progress = durationMs > 0 ? clamp(playedMs / durationMs, 0, 1) : 0;
+
+  if (progress <= 0.05 || playedMs <= 15000) return 1;
+  if (progress <= 0.15) return 0.82;
+  if (progress <= 0.35) return 0.58;
+  if (progress <= 0.65) return 0.35;
+  if (progress <= 0.85) return 0.18;
+  return 0.08;
 }
 
 const WEATHER_CONTEXT_LABELS = {

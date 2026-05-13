@@ -26,7 +26,9 @@
     "stats": {
       "playEvents": 0,
       "chatEvents": 0,
-      "toplistEvents": 0
+      "toplistEvents": 0,
+      "skipEvents": 0,
+      "skipReasonEvents": 0
     },
     "evidence": []
   },

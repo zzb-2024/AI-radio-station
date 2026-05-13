@@ -41,6 +41,7 @@ export class Player {
     this._djPreviewInFlight = null;
     this._djPreviewPlayedKey = '';
     this._djPreviewRetryAt = 0;
+    this._audioContextUnlockBound = false;
     this.audioSettings = normalizeAudioSettings(DEFAULT_AUDIO_SETTINGS);
 
     // UI events
@@ -64,6 +65,7 @@ export class Player {
     });
 
     this.setAudioSettings(this.audioSettings);
+    this._bindAudioContextUnlock();
   }
 
   on(event, fn) { (this._listeners[event] ||= []).push(fn); }
@@ -75,6 +77,8 @@ export class Player {
       ...settings,
     });
     this.audioSettings = next;
+    this._cancelFade('main');
+    this._cancelFade('tts');
 
     if (this.tts) {
       if (this._preDuckVolume != null) {
@@ -103,7 +107,7 @@ export class Player {
           max: 4,
         });
       } else if (this.tts) {
-        this.tts.volume = 1;
+        this.tts.volume = fallbackTtsElementVolume(next.ttsBoostGain);
       }
       return;
     }
@@ -135,7 +139,6 @@ export class Player {
 
     if (!nextSong?.url) {
       if (selectionChanged) {
-        this._stopTTS();
         this.audio.pause();
         this.audio.removeAttribute('src');
         this.audio.load();
@@ -151,7 +154,6 @@ export class Player {
 
     if (selectionChanged) {
       this._resetDjPreview();
-      this._stopTTS();
       if (!sameSrc) this.audio.src = nextSong.url;
       this._updateNowUI(nextSong);
       this._emit('song-change', nextSong);
@@ -166,11 +168,12 @@ export class Player {
       }
       this.audio.play().catch(() => {});
       if (selectionChanged) {
+        const targetVolume = this._getMainPlaybackTargetVolume();
         this._fadeValue({
           slot: 'main',
           read: () => this.audio.volume,
           write: v => { this.audio.volume = v; },
-          target: this.audioSettings.musicVolume,
+          target: targetVolume,
           durationMs: this.audioSettings.musicFadeMs,
           min: 0,
           max: 1,
@@ -195,20 +198,17 @@ export class Player {
   }
 
   async requestPlayIdx(i) {
-    this._stopTTS();
-    const state = await api.play('index', i).catch(() => null);
+    const state = await api.play('index', i, this._playMeta('manual')).catch(() => null);
     if (state) this.syncState(state, { autoplay: true });
   }
 
-  async requestNext() {
-    this._stopTTS();
-    const state = await api.next().catch(() => null);
+  async requestNext(source = 'manual') {
+    const state = await api.next(this._playMeta(source)).catch(() => null);
     if (state) this.syncState(state, { autoplay: true });
   }
 
   async requestPrev() {
-    this._stopTTS();
-    const state = await api.prev().catch(() => null);
+    const state = await api.prev(this._playMeta('manual')).catch(() => null);
     if (state?.nowPlaying?.url) {
       this.syncState(state, { autoplay: true });
       return;
@@ -320,8 +320,14 @@ export class Player {
   }
 
   _handleMainEnded() {
-    if (this.tts) this._stopTTS();
-    void this.requestNext();
+    void this.requestNext('ended');
+  }
+
+  _getMainPlaybackTargetVolume() {
+    const base = clamp(this._preDuckVolume ?? this.audioSettings.musicVolume, 0, 1);
+    if (!this.tts) return base;
+    if (this._preDuckVolume == null) this._preDuckVolume = base;
+    return clamp(base * this.audioSettings.ttsDuckVolume, 0, 1);
   }
 
   _djPreviewKeyForCurrent() {
@@ -399,16 +405,8 @@ export class Player {
   }
 
   async _attachTtsBoost(tts) {
-    const Ctor = window.AudioContext || window.webkitAudioContext;
-    if (!Ctor) return null;
-
     try {
-      if (!this._ttsAudioContext) {
-        this._ttsAudioContext = new Ctor();
-      }
-      if (this._ttsAudioContext.state !== 'running') {
-        await this._ttsAudioContext.resume();
-      }
+      await this._ensureTtsAudioContext();
       if (this._ttsAudioContext.state !== 'running') return null;
 
       const source = this._ttsAudioContext.createMediaElementSource(tts);
@@ -423,6 +421,27 @@ export class Player {
       this._ttsBoost = null;
       return null;
     }
+  }
+
+  _bindAudioContextUnlock() {
+    if (this._audioContextUnlockBound || typeof window === 'undefined') return;
+    this._audioContextUnlockBound = true;
+    const unlock = () => { void this._ensureTtsAudioContext(); };
+    window.addEventListener('pointerdown', unlock, { once: true, passive: true, capture: true });
+    window.addEventListener('keydown', unlock, { once: true, capture: true });
+    window.addEventListener('touchstart', unlock, { once: true, passive: true, capture: true });
+  }
+
+  async _ensureTtsAudioContext() {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) throw new Error('AudioContext unavailable');
+    if (!this._ttsAudioContext) {
+      this._ttsAudioContext = new Ctor();
+    }
+    if (this._ttsAudioContext.state !== 'running') {
+      await this._ttsAudioContext.resume();
+    }
+    return this._ttsAudioContext;
   }
 
   _detachTtsBoost() {
@@ -475,6 +494,22 @@ export class Player {
 
     tween.frameId = requestAnimationFrame(tick);
   }
+
+  _playMeta(source = 'manual') {
+    const durationMs = Number.isFinite(this.audio.duration) && this.audio.duration > 0
+      ? Math.round(this.audio.duration * 1000)
+      : 0;
+    const playedMs = Math.max(0, Math.round(this.audio.currentTime * 1000));
+    return {
+      source,
+      playedMs,
+      durationMs,
+      requestText: this.currentSong?.requestText || '',
+      reasonText: this.currentSong?.requestReason || '',
+      reasonLabels: Array.isArray(this.currentSong?.reasonLabels) ? this.currentSong.reasonLabels : [],
+      skipStrength: estimateSkipStrength({ playedMs, durationMs }),
+    };
+  }
 }
 
 function clamp(value, min, max) {
@@ -495,6 +530,25 @@ function normalizeAudioSettings(input = {}) {
 function numberOr(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function fallbackTtsElementVolume(boostGain) {
+  return clamp(numberOr(boostGain, DEFAULT_AUDIO_SETTINGS.ttsBoostGain), 0, 1);
+}
+
+function estimateSkipStrength({ playedMs = 0, durationMs = 0 } = {}) {
+  const played = Number(playedMs);
+  const duration = Number(durationMs);
+  const progress = Number.isFinite(played) && Number.isFinite(duration) && duration > 0
+    ? clamp(played / duration, 0, 1)
+    : 0;
+
+  if (progress <= 0.05 || played <= 15000) return 1;
+  if (progress <= 0.15) return 0.82;
+  if (progress <= 0.35) return 0.58;
+  if (progress <= 0.65) return 0.35;
+  if (progress <= 0.85) return 0.18;
+  return 0.08;
 }
 
 function easeInOutCubic(t) {

@@ -8,6 +8,7 @@ export class Playback {
     this.nowPlaying = null;
     this.queue = [];
     this.currentIndex = -1;
+    this.currentStartedAt = 0;
     this._clients = new Set();
     this._resetDjState();
   }
@@ -17,6 +18,7 @@ export class Playback {
       nowPlaying: this.nowPlaying,
       queue: this.queue,
       currentIndex: this.currentIndex,
+      currentStartedAt: this.currentStartedAt,
     };
   }
 
@@ -37,6 +39,7 @@ export class Playback {
     this.queue = Array.isArray(queue) ? queue : [];
     this.currentIndex = -1;
     this.nowPlaying = null;
+    this.currentStartedAt = 0;
     this._resetDjState();
     this.clearDjPreview();
   }
@@ -51,6 +54,7 @@ export class Playback {
 
     this.currentIndex = i;
     this.nowPlaying = song;
+    this.currentStartedAt = Date.now();
     this._noteSongChange(song, prevSongId, countDjProgress);
     if (broadcast) this.broadcast({ type: 'now-playing', ...this.snapshot() });
     return song;

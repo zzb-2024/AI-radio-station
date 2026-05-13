@@ -43,17 +43,17 @@ export const api = {
       body: JSON.stringify({ nextSongId }),
     });
   },
-  play(action, index) {
+  play(action, index, meta = {}) {
     return jsonFetch('/api/play', {
       method: 'POST',
-      body: JSON.stringify({ action, index }),
+      body: JSON.stringify({ action, index, meta }),
     });
   },
-  next() {
-    return this.play('next');
+  next(meta = {}) {
+    return this.play('next', null, meta);
   },
-  prev() {
-    return this.play('prev');
+  prev(meta = {}) {
+    return this.play('prev', null, meta);
   },
 };
 

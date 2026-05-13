@@ -4,7 +4,7 @@
 import { config } from './config.js';
 import { search, getToplistTracks, getToplists, getUrl } from './services/ncm.js';
 import { composeDjCommentary } from './services/dj.js';
-import { askRadioChat, askRadioPlan } from './services/llm.js';
+import { analyzeMusicRequest, askRadioChat, askRadioPlan } from './services/llm.js';
 import { synthesize } from './services/tts.js';
 import { fetchWeather } from './services/weather.js';
 import { searchWeb } from './services/web-search.js';
@@ -13,9 +13,13 @@ import { route as routeIntent, extractDirectKeyword } from './core/intent.js';
 import { resolveQueue } from './core/queue.js';
 import {
   buildProfileSuggestion,
+  estimateSkipStrength,
+  extractSkipReasonLabels,
   getProfile,
   learnProfileFromConversation,
   learnProfileFromPlay,
+  learnProfileFromSkip,
+  learnProfileFromSkipReason,
   saveProfile,
 } from './core/profile.js';
 import { proxyStream } from './lib/http.js';
@@ -34,6 +38,7 @@ export function registerRoutes(app, playback) {
     const mode = normalizeChatMode(req.body?.mode);
     try {
       const result = await planFromInput(message, playback, mode);
+      await maybeCaptureSkipReason(message, playback).catch(error => console.warn(`[profile] ${error.message}`));
       if (result.reason === 'chat') {
         const weather = await getListeningWeather();
         await learnProfileFromConversation(message, result.say || '', {
@@ -45,19 +50,28 @@ export function registerRoutes(app, playback) {
         return await sendChatOnlyResponse({ res, playback, requestId, result });
       }
 
+      const weather = await getListeningWeather();
+      const timePart = getTimePart();
       const queue = await resolveQueue(result.play || []);
-      playback.setQueue(queue);
+      playback.setQueue(annotateQueueContext(queue, {
+        requestText: message,
+        reason: result.reason || mode,
+        toplist: result.toplist || null,
+        segue: result.segue || '',
+        musicPlan: result.musicPlan || null,
+        weather,
+        timePart,
+      }));
       const song = playback.playNext({ broadcast: false });
       if (song) await state.addPlay(song.name, song.artist, song);
       if (song) {
-        const weather = await getListeningWeather();
         await learnProfileFromPlay(song, {
           source: result.reason || mode,
           requestText: message,
           toplist: result.toplist || null,
           reason: result.reason || '',
           weather,
-          timePart: getTimePart(),
+          timePart,
         }).catch(error => console.warn(`[profile] ${error.message}`));
       }
 
@@ -70,13 +84,12 @@ export function registerRoutes(app, playback) {
         ...playback.snapshot(),
       };
       playback.broadcast({ type: 'chat', ...response });
-      const weather = await getListeningWeather();
       await learnProfileFromConversation(message, result.say || '', {
         source: result.reason || mode,
         toplist: result.toplist || null,
         currentSong: song || playback.nowPlaying || null,
         weather,
-        timePart: getTimePart(),
+        timePart,
       }).catch(error => console.warn(`[profile] ${error.message}`));
       res.json(response);
     } catch (e) {
@@ -121,6 +134,7 @@ export function registerRoutes(app, playback) {
   app.post('/api/play', async (req, res) => {
     const action = req.body?.action;
     const index = req.body?.index;
+    const meta = normalizePlayMeta(req.body?.meta);
 
     const previousSong = playback.nowPlaying;
     let song = null;
@@ -136,6 +150,25 @@ export function registerRoutes(app, playback) {
 
     if (song) {
       await state.addPlay(song.name, song.artist, song);
+      if (shouldRecordSkip(action, previousSong, song, meta)) {
+        const skipContext = buildSkipContext(previousSong, song, action, meta);
+        const skipEvent = await state.addSkip(previousSong, skipContext);
+        if (skipEvent) {
+          const weather = await getListeningWeather();
+          await learnProfileFromSkip(previousSong, {
+            source: action,
+            requestText: previousSong?.requestText || meta.requestText || '',
+            reasonText: meta.reasonText || '',
+            reasonLabels: meta.reasonLabels || [],
+            playedMs: meta.playedMs,
+            durationMs: meta.durationMs,
+            skipStrength: meta.skipStrength,
+            toplist: previousSong?.toplist || null,
+            weather,
+            timePart: getTimePart(),
+          }).catch(error => console.warn(`[profile] ${error.message}`));
+        }
+      }
       const weather = await getListeningWeather();
       await learnProfileFromPlay(song, {
         source: action,
@@ -283,7 +316,8 @@ export function registerRoutes(app, playback) {
   app.get('/api/profile/suggestion', async (_req, res) => {
     const profile = await getProfile();
     const recent = await state.recentPlays(80);
-    res.json({ suggestion: buildProfileSuggestion(profile, recent) });
+    const recentSkips = await state.recentSkips(40);
+    res.json({ suggestion: buildProfileSuggestion(profile, recent, recentSkips) });
   });
 }
 
@@ -312,11 +346,6 @@ async function planFromInput(message, playback, mode = 'auto') {
   }
 
   const intent = routeIntent(message);
-  if (isToplistRequest(message)) {
-    const toplistPlan = await planFromToplistInput(message);
-    if (toplistPlan) return toplistPlan;
-  }
-
   if (intent === 'direct' && !isContextualMusicRequest(message)) {
     const keyword = extractDirectKeyword(message);
     const songs = await search(keyword, config.queue.directSearchLimit);
@@ -332,20 +361,61 @@ async function planFromInput(message, playback, mode = 'auto') {
     return await planFromChatInput(message, playback);
   }
 
-  const weather = await fetchWeather();
-  const currentSong = playback?.nowPlaying || null;
-  const webSearch = await maybeSearchWeb({ message, currentSong, mode: 'auto' });
-  const env = { weather, currentSong, webSearch };
-  return await askRadioPlan(message, env);
+  return await planFromMusicRequest(message, playback, { mode: 'auto' });
 }
 
 async function planFromSongInput(message, playback) {
+  return await planFromMusicRequest(message, playback, { mode: 'song' });
+}
+
+async function planFromMusicRequest(message, playback, { mode = 'auto' } = {}) {
+  const currentSong = playback?.nowPlaying || null;
+  const musicPlan = await analyzeMusicRequest(message, { currentSong }).catch(error => {
+    console.warn(`[intent] ${error.message}`);
+    return null;
+  });
+
+  if (musicPlan?.intent === 'chat' && mode !== 'song' && musicPlan.confidence >= 0.5) {
+    return await planFromChatInput(message, playback);
+  }
+
+  if (musicPlan?.intent === 'exact_song') {
+    const directPlan = await planFromAnalyzedExactSong(message, musicPlan);
+    if (directPlan) return directPlan;
+    if (mode === 'song') return makeNoSongFoundPlan(musicPlan.exactQuery || extractSongSearchKeyword(message));
+  }
+
+  if (musicPlan?.intent === 'toplist') {
+    const toplistPlan = await planFromToplistInput(musicPlan.toplistName || message);
+    if (toplistPlan) return { ...toplistPlan, musicPlan };
+  }
+
+  if (musicPlan?.intent === 'recommend') {
+    return await planFromAiSongRequest(message, playback, musicPlan);
+  }
+
+  return await planFromLegacyMusicRequest(message, playback, mode);
+}
+
+async function planFromAnalyzedExactSong(message, musicPlan) {
+  const { keyword, songs } = await searchFirstHit(collectSearchQueries(musicPlan, message), config.queue.directSearchLimit);
+  if (!songs.length) return null;
+  return {
+    say: makeDirectPlaySay(keyword, songs.length),
+    play: songs,
+    reason: 'direct',
+    segue: '',
+    musicPlan,
+  };
+}
+
+async function planFromLegacyMusicRequest(message, playback, mode = 'auto') {
   if (isToplistRequest(message)) {
     const toplistPlan = await planFromToplistInput(message);
     if (toplistPlan) return toplistPlan;
   }
 
-  if (isContextualMusicRequest(message)) {
+  if (mode !== 'song' || isContextualMusicRequest(message)) {
     return await planFromAiSongRequest(message, playback);
   }
 
@@ -360,21 +430,17 @@ async function planFromSongInput(message, playback) {
     };
   }
 
-  return {
-    say: `没搜到 ${keyword}，你可以换个歌名、歌手或者直接说“电音榜”。`,
-    play: [],
-    reason: 'chat',
-    segue: '',
-  };
+  return makeNoSongFoundPlan(keyword);
 }
 
-async function planFromAiSongRequest(message, playback) {
+async function planFromAiSongRequest(message, playback, musicPlan = null) {
   const weather = await fetchWeather();
   const currentSong = playback?.nowPlaying || null;
   const webSearch = await maybeSearchWeb({ message, currentSong, mode: 'song' });
-  const env = { weather, currentSong, webSearch };
+  const env = { weather, currentSong, webSearch, musicPlan };
   try {
-    return await askRadioPlan(message, env);
+    const result = await askRadioPlan(message, env);
+    return musicPlan ? { ...result, musicPlan } : result;
   } catch (error) {
     console.warn(`[plan] contextual fallback: ${error.message}`);
     return await buildFallbackContextualSongPlan(message);
@@ -480,6 +546,51 @@ function makeDirectPlaySay(keyword, count = 0) {
   if (!clean) return '我先给你找一首合适的。';
   if (count > 1) return `找到 ${clean} 了，我先接上几首。`;
   return `找到 ${clean} 了，先听这首。`;
+}
+
+function makeNoSongFoundPlan(keyword) {
+  const clean = String(keyword || '').trim();
+  return {
+    say: `没搜到 ${clean || '这首歌'}，你可以换个歌名、歌手或者直接说“电音榜”。`,
+    play: [],
+    reason: 'chat',
+    segue: '',
+  };
+}
+
+function collectSearchQueries(musicPlan, message) {
+  return uniqueQueryList([
+    musicPlan?.exactQuery,
+    ...(Array.isArray(musicPlan?.searchQueries) ? musicPlan.searchQueries : []),
+    musicPlan?.recommendationQuery,
+    extractSongSearchKeyword(message),
+    String(message || '').trim(),
+  ]);
+}
+
+async function searchFirstHit(queries, limit = config.queue.directSearchLimit) {
+  for (const keyword of queries) {
+    const songs = await search(keyword, limit).catch(error => {
+      console.warn(`[ncm:search] ${keyword}: ${error.message}`);
+      return [];
+    });
+    if (songs.length) return { keyword, songs };
+  }
+  return { keyword: queries[0] || '', songs: [] };
+}
+
+function uniqueQueryList(values) {
+  const seen = new Set();
+  const output = [];
+  for (const value of values) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(text);
+  }
+  return output.slice(0, 5);
 }
 
 async function buildFallbackContextualSongPlan(message) {
@@ -617,6 +728,103 @@ function fallbackChatResult(error) {
     reason: 'chat',
     segue: '',
   };
+}
+
+async function maybeCaptureSkipReason(message, playback) {
+  const labels = extractSkipReasonLabels(message);
+  if (!labels.length) return null;
+
+  const latestSkip = await state.latestSkip(5 * 60 * 1000);
+  if (!latestSkip) return null;
+
+  const reasonText = String(message || '').trim();
+  const reasonLabels = labels.map(item => item.value).filter(Boolean);
+  await state.annotateLatestSkip({
+    reasonText,
+    reasonLabels,
+    reasonSource: 'chat',
+  }).catch(error => console.warn(`[profile] ${error.message}`));
+
+  const weather = await getListeningWeather();
+  return await learnProfileFromSkipReason(message, latestSkip, {
+    source: 'chat',
+    reasonText,
+    reasonLabels,
+    currentSong: playback.nowPlaying || null,
+    weather,
+    timePart: getTimePart(),
+  }).catch(error => console.warn(`[profile] ${error.message}`));
+}
+
+function annotateQueueContext(queue, context = {}) {
+  return (Array.isArray(queue) ? queue : []).map(song => ({
+    ...song,
+    requestText: String(context.requestText || song?.requestText || ''),
+    requestReason: String(context.reason || song?.requestReason || ''),
+    toplist: context.toplist || song?.toplist || null,
+    musicPlan: context.musicPlan || song?.musicPlan || null,
+    segue: String(context.segue || song?.segue || ''),
+  }));
+}
+
+function normalizePlayMeta(meta = {}) {
+  const source = meta && typeof meta === 'object' ? meta : {};
+  return {
+    source: String(source.source || 'manual').trim() || 'manual',
+    requestText: String(source.requestText || '').trim(),
+    reasonText: String(source.reasonText || '').trim(),
+    reasonLabels: Array.isArray(source.reasonLabels)
+      ? source.reasonLabels.map(item => String(item).trim()).filter(Boolean).slice(0, 8)
+      : [],
+    playedMs: normalizeNumber(source.playedMs, 0),
+    durationMs: normalizeNumber(source.durationMs, 0),
+    skipStrength: normalizeNumber(source.skipStrength, 0),
+  };
+}
+
+function buildSkipContext(previousSong, currentSong, action, meta = {}) {
+  const currentTime = clampNumber(meta.playedMs, 0, meta.durationMs || 0);
+  return {
+    source: action,
+    action,
+    requestText: previousSong?.requestText || meta.requestText || '',
+    reasonText: meta.reasonText || '',
+    reasonLabels: meta.reasonLabels || [],
+    playedMs: currentTime || meta.playedMs || 0,
+    durationMs: meta.durationMs || previousSong?.duration || 0,
+    skipStrength: meta.skipStrength || estimateSkipStrength({
+      playedMs: currentTime || meta.playedMs || 0,
+      durationMs: meta.durationMs || previousSong?.duration || 0,
+    }),
+    weather: previousSong?.weather || '',
+    timePart: previousSong?.timePart || getTimePart(),
+    toplist: previousSong?.toplist || null,
+    context: {
+      weather: previousSong?.weather || '',
+      timePart: previousSong?.timePart || getTimePart(),
+      lastSong: previousSong?.name ? `${previousSong.name} - ${previousSong.artist || ''}` : '',
+      queueReason: previousSong?.requestReason || previousSong?.requestText || '',
+    },
+  };
+}
+
+function shouldRecordSkip(action, previousSong, nextSong, meta = {}) {
+  if (!previousSong?.id || !nextSong?.id) return false;
+  if (action === 'prev') return false;
+  if (meta.source === 'ended') return false;
+  if (previousSong.id === nextSong.id) return false;
+  return true;
+}
+
+function normalizeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clampNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
 }
 
 async function maybeSearchWeb({ message, currentSong, mode = 'auto' }) {

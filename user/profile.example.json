@@ -19,5 +19,16 @@
     "transition": "上一首和下一首之间要有自然过渡"
   },
   "notes": "",
+  "auto": {
+    "version": 1,
+    "updatedAt": "",
+    "summary": "",
+    "stats": {
+      "playEvents": 0,
+      "chatEvents": 0,
+      "toplistEvents": 0
+    },
+    "evidence": []
+  },
   "updatedAt": ""
 }

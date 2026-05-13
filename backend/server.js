@@ -10,6 +10,7 @@ import { Playback } from './core/playback.js';
 import { state } from './core/state.js';
 import { startScheduler } from './core/scheduler.js';
 import { registerRoutes } from './routes.js';
+import { learnProfileFromPlay } from './core/profile.js';
 
 assertConfig();
 
@@ -40,7 +41,17 @@ startScheduler(
     if (!payload.queue) return;
     playback.setQueue(payload.queue);
     const song = playback.playNext({ broadcast: false });
-    if (song) await state.addPlay(song.name, song.artist, song);
+    if (song) {
+      await state.addPlay(song.name, song.artist, song);
+      await learnProfileFromPlay(song, {
+        source: 'scheduler',
+        requestText: payload.label || payload.say || payload.reason || '',
+        reason: payload.reason || '',
+        toplist: payload.toplist || null,
+        weather: payload.weather || '',
+        time: new Date().toISOString(),
+      }).catch(error => console.warn(`[profile] ${error.message}`));
+    }
     Object.assign(payload, playback.snapshot());
   }
 );

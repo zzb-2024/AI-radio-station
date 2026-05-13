@@ -11,8 +11,17 @@ import { searchWeb } from './services/web-search.js';
 import { state } from './core/state.js';
 import { route as routeIntent, extractDirectKeyword } from './core/intent.js';
 import { resolveQueue } from './core/queue.js';
-import { buildProfileSuggestion, getProfile, saveProfile } from './core/profile.js';
+import {
+  buildProfileSuggestion,
+  getProfile,
+  learnProfileFromConversation,
+  learnProfileFromPlay,
+  saveProfile,
+} from './core/profile.js';
 import { proxyStream } from './lib/http.js';
+
+const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000;
+let weatherCache = { at: 0, value: '' };
 
 /**
  * @param {import('express').Express} app
@@ -26,6 +35,13 @@ export function registerRoutes(app, playback) {
     try {
       const result = await planFromInput(message, playback, mode);
       if (result.reason === 'chat') {
+        const weather = await getListeningWeather();
+        await learnProfileFromConversation(message, result.say || '', {
+          source: 'chat',
+          currentSong: playback.nowPlaying || null,
+          weather,
+          timePart: getTimePart(),
+        }).catch(error => console.warn(`[profile] ${error.message}`));
         return await sendChatOnlyResponse({ res, playback, requestId, result });
       }
 
@@ -33,6 +49,17 @@ export function registerRoutes(app, playback) {
       playback.setQueue(queue);
       const song = playback.playNext({ broadcast: false });
       if (song) await state.addPlay(song.name, song.artist, song);
+      if (song) {
+        const weather = await getListeningWeather();
+        await learnProfileFromPlay(song, {
+          source: result.reason || mode,
+          requestText: message,
+          toplist: result.toplist || null,
+          reason: result.reason || '',
+          weather,
+          timePart: getTimePart(),
+        }).catch(error => console.warn(`[profile] ${error.message}`));
+      }
 
       const ttsUrl = result.say ? await synthesize(result.say) : null;
 
@@ -43,6 +70,14 @@ export function registerRoutes(app, playback) {
         ...playback.snapshot(),
       };
       playback.broadcast({ type: 'chat', ...response });
+      const weather = await getListeningWeather();
+      await learnProfileFromConversation(message, result.say || '', {
+        source: result.reason || mode,
+        toplist: result.toplist || null,
+        currentSong: song || playback.nowPlaying || null,
+        weather,
+        timePart: getTimePart(),
+      }).catch(error => console.warn(`[profile] ${error.message}`));
       res.json(response);
     } catch (e) {
       console.error('[chat] ', e.message);
@@ -67,6 +102,14 @@ export function registerRoutes(app, playback) {
     const song = playback.playNext({ broadcast: false });
     if (song) {
       await state.addPlay(song.name, song.artist, song);
+      const weather = await getListeningWeather();
+      await learnProfileFromPlay(song, {
+        source: 'next',
+        requestText: '自动切到下一首',
+        previousSong,
+        weather,
+        timePart: getTimePart(),
+      }).catch(error => console.warn(`[profile] ${error.message}`));
       const snapshot = playback.snapshot();
       playback.broadcast({ type: 'now-playing', ...snapshot });
       queueDjBroadcast(playback, snapshot, previousSong, '自动切到下一首');
@@ -93,6 +136,14 @@ export function registerRoutes(app, playback) {
 
     if (song) {
       await state.addPlay(song.name, song.artist, song);
+      const weather = await getListeningWeather();
+      await learnProfileFromPlay(song, {
+        source: action,
+        requestText: describePlayAction(action, index),
+        previousSong,
+        weather,
+        timePart: getTimePart(),
+      }).catch(error => console.warn(`[profile] ${error.message}`));
       const snapshot = playback.snapshot();
       playback.broadcast({ type: 'now-playing', ...snapshot });
       if (action !== 'prev') {
@@ -257,7 +308,7 @@ async function planFromInput(message, playback, mode = 'auto') {
   }
 
   if (mode === 'song') {
-    return await planFromSongInput(message);
+    return await planFromSongInput(message, playback);
   }
 
   const intent = routeIntent(message);
@@ -266,11 +317,11 @@ async function planFromInput(message, playback, mode = 'auto') {
     if (toplistPlan) return toplistPlan;
   }
 
-  if (intent === 'direct') {
+  if (intent === 'direct' && !isContextualMusicRequest(message)) {
     const keyword = extractDirectKeyword(message);
     const songs = await search(keyword, config.queue.directSearchLimit);
     return {
-      say: `好的，为你播放 ${keyword}`,
+      say: makeDirectPlaySay(keyword, songs.length),
       play: songs,
       reason: 'direct',
       segue: '',
@@ -288,17 +339,21 @@ async function planFromInput(message, playback, mode = 'auto') {
   return await askRadioPlan(message, env);
 }
 
-async function planFromSongInput(message) {
+async function planFromSongInput(message, playback) {
   if (isToplistRequest(message)) {
     const toplistPlan = await planFromToplistInput(message);
     if (toplistPlan) return toplistPlan;
+  }
+
+  if (isContextualMusicRequest(message)) {
+    return await planFromAiSongRequest(message, playback);
   }
 
   const keyword = extractSongSearchKeyword(message);
   const songs = await search(keyword, config.queue.directSearchLimit);
   if (songs.length) {
     return {
-      say: `好的，为你播放 ${keyword}`,
+      say: makeDirectPlaySay(keyword, songs.length),
       play: songs,
       reason: 'direct',
       segue: '',
@@ -311,6 +366,19 @@ async function planFromSongInput(message) {
     reason: 'chat',
     segue: '',
   };
+}
+
+async function planFromAiSongRequest(message, playback) {
+  const weather = await fetchWeather();
+  const currentSong = playback?.nowPlaying || null;
+  const webSearch = await maybeSearchWeb({ message, currentSong, mode: 'song' });
+  const env = { weather, currentSong, webSearch };
+  try {
+    return await askRadioPlan(message, env);
+  } catch (error) {
+    console.warn(`[plan] contextual fallback: ${error.message}`);
+    return await buildFallbackContextualSongPlan(message);
+  }
 }
 
 async function planFromChatInput(message, playback) {
@@ -354,6 +422,31 @@ function normalizeChatMode(mode) {
   return 'auto';
 }
 
+async function getListeningWeather() {
+  const now = Date.now();
+  if (weatherCache.value && now - weatherCache.at < WEATHER_CACHE_TTL_MS) {
+    return weatherCache.value;
+  }
+
+  const value = await fetchWeather().catch(error => {
+    console.warn(`[weather] profile context failed: ${error.message}`);
+    return '';
+  });
+  weatherCache = { at: now, value: value || '' };
+  return weatherCache.value;
+}
+
+function getTimePart(date = new Date()) {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 9) return 'morning';
+  if (hour >= 9 && hour < 12) return 'forenoon';
+  if (hour >= 12 && hour < 14) return 'noon';
+  if (hour >= 14 && hour < 18) return 'afternoon';
+  if (hour >= 18 && hour < 22) return 'evening';
+  if (hour >= 22 || hour < 2) return 'lateNight';
+  return 'night';
+}
+
 function extractSongSearchKeyword(message) {
   const text = String(message || '').trim();
   if (!text) return '';
@@ -362,6 +455,92 @@ function extractSongSearchKeyword(message) {
     .replace(/^(播放|来一首|放一首|来点|来些|来首|放点|放些|推荐点|推荐一些|给我来点|给我来些|帮我找点|帮我播放|换几首歌|换几首|换几首的|换几首些|换几首首|换几首曲|换点|换些|点歌|搜歌|搜索|听点|想听点|想听|想听些|想听一些)\s*/i, '')
     .replace(/(吧|呗|一下|一些|一点|点)$/i, '')
     .trim() || text;
+}
+
+function isContextualMusicRequest(message) {
+  const text = String(message || '').trim();
+  if (!text) return false;
+  if (isLikelyExactSongCommand(text)) return false;
+
+  const hasMusicAction = /(推荐|给我来|来几首|来点|来些|放点|放些|听点|想听|换几首|换点|找点|帮我找点|歌单|音乐|歌曲)/i.test(text);
+  const hasPluralOrPlanSignal = /(几首|几首歌|一些|一点|一批|来点|来些|放点|放些|听点|推荐|歌单|适合|合适|榜)/i.test(text);
+  const hasSceneSignal = /(今天|天气|阴天|雨天|下雨|晴天|多云|凉快|冷|热|闷|湿|干|早上|上午|中午|下午|晚上|深夜|睡前|通勤|学习|工作|跑步|开车|放松|治愈|安静|开心|难过|emo|焦虑|失眠|氛围|适合|合适|电音|电子|edm|house|techno|摇滚|民谣|爵士|说唱|古风|国风|流行)/i.test(text);
+  const looksLikeSentence = /[，。！？,.!?]/.test(text) || text.length > 18;
+
+  return hasMusicAction && hasPluralOrPlanSignal && (hasSceneSignal || looksLikeSentence);
+}
+
+function isLikelyExactSongCommand(text) {
+  return /^(播放|来一首|放一首|来首|搜歌|搜索)\s*\S.{0,38}$/i.test(text)
+    && !/(推荐|几首|来点|来些|放点|放些|听点|适合|合适|歌单|榜|音乐|歌曲|氛围|心情)/i.test(text);
+}
+
+function makeDirectPlaySay(keyword, count = 0) {
+  const clean = String(keyword || '').trim();
+  if (!clean) return '我先给你找一首合适的。';
+  if (count > 1) return `找到 ${clean} 了，我先接上几首。`;
+  return `找到 ${clean} 了，先听这首。`;
+}
+
+async function buildFallbackContextualSongPlan(message) {
+  const text = String(message || '').trim();
+  const keyword = pickFallbackKeyword(text);
+  const songs = await search(keyword, config.queue.directSearchLimit).catch(() => []);
+
+  if (songs.length) {
+    return {
+      say: buildFallbackSay(text),
+      play: songs,
+      reason: 'fallback',
+      segue: '',
+    };
+  }
+
+  return {
+    say: buildFallbackSay(text),
+    play: [],
+    reason: 'chat',
+    segue: '',
+  };
+}
+
+function pickFallbackKeyword(text) {
+  const rules = [
+    [/阴天|下雨|雨天|多云|凉快|冷|阴沉|潮湿/, '治愈'],
+    [/睡前|深夜|晚上|夜里|晚安/, '安静'],
+    [/工作|学习|通勤|专注|办公/, 'lofi'],
+    [/开心|轻松|放松|舒服|晴天|明亮/, '轻快'],
+    [/难过|emo|焦虑|失落|烦|不开心|低落/, '治愈'],
+    [/电音|电子|edm|house|techno|舞曲/, '电音'],
+    [/古风|国风/, '古风'],
+    [/摇滚/, '摇滚'],
+    [/民谣/, '民谣'],
+    [/爵士/, '爵士'],
+    [/说唱|rap/, '说唱'],
+    [/流行|pop/, '流行'],
+  ];
+
+  for (const [regex, keyword] of rules) {
+    if (regex.test(text)) return keyword;
+  }
+
+  return '合适的歌';
+}
+
+function buildFallbackSay(text) {
+  if (/阴天|下雨|雨天|多云|凉快|冷|阴沉|潮湿/.test(text)) {
+    return `今天这个天气，先给你挑几首顺一点的。`;
+  }
+  if (/睡前|深夜|晚上|夜里|晚安/.test(text)) {
+    return `夜里就别太闹了，我给你放轻一点的。`;
+  }
+  if (/工作|学习|通勤|专注|办公/.test(text)) {
+    return `先铺一层不打扰的氛围，适合边做事边听。`;
+  }
+  if (/开心|轻松|放松|舒服|晴天|明亮/.test(text)) {
+    return `这个状态，来点更轻快的正合适。`;
+  }
+  return `我先按这个感觉给你挑几首。`;
 }
 
 function isToplistRequest(text) {
@@ -503,7 +682,13 @@ function buildWebSearchRequest({ message, currentSong, mode }) {
 }
 
 function isRealtimeMusicRequest(text) {
-  return /(最新|最近|今天|现在|今年|2026|26年|榜单|排行|排名|热门|热歌|热曲|新歌|实时|热度|年度|新闻|动态|top|hit|电音|电子|edm|house|techno|舞曲)/i.test(text);
+  const value = String(text || '');
+  const realtimeSignal = /(最新|最近|今年|2026|26年|榜单|排行|排名|热门|热歌|热曲|新歌|实时|热度|年度|新闻|动态|top|hit)/i;
+  const genreSignal = /(电音|电子|edm|house|techno|舞曲)/i;
+  const todaySignal = /(今天|现在)/i;
+  return realtimeSignal.test(value)
+    || (genreSignal.test(value) && /(榜|排行|排名|热门|最新|新歌|实时|热度|年度|今年|2026|26年|top|hit)/i.test(value))
+    || (todaySignal.test(value) && /(榜|排行|排名|热门|最新|新歌|实时|热度|年度|top|hit)/i.test(value));
 }
 
 function isSongBackgroundQuestion(text) {

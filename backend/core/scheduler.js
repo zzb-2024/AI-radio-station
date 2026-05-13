@@ -22,7 +22,7 @@ export function startScheduler(broadcast, onPlan) {
       const weather = await fetchWeather();
       const result = await askRadioPlan(`现在是${label}，请规划接下来的音乐`, { weather });
       const queue = await resolveQueue(result.play || []);
-      const payload = { type: 'schedule', label, ...result, queue };
+      const payload = { type: 'schedule', label, weather, ...result, queue };
       if (onPlan) await onPlan(payload);
       broadcast(payload);
     } catch (e) {

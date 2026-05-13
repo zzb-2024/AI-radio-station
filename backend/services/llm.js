@@ -16,6 +16,7 @@ const RADIO_PLAN_OUTPUT_CONTRACT = [
   '- JSON 字段必须且只能包含：say, play, reason, segue。',
   '- play 必须是字符串数组，元素格式是“歌曲名 - 艺术家”。',
   '- 选曲必须优先遵守长期用户画像，尤其是避免内容、场景偏好和 DJ 风格。',
+  '- 遇到天气、心情、场景化点歌时，say 要自然承接氛围，不要复述用户整句，也不要说“为你播放 + 原话”。',
 ].join('\n');
 
 const RADIO_CHAT_SYSTEM = [

@@ -10,27 +10,12 @@
 import { config } from '../config.js';
 import { search, getUrl, getDetail, getLyric } from '../services/ncm.js';
 
-export async function resolveQueue(playList) {
-  const tasks = (playList || []).map(async raw => {
+export async function resolveQueue(playList, { eagerLyricCount = 1 } = {}) {
+  const tasks = (playList || []).map(async (raw, index) => {
     try {
-      const base = await resolveBaseSong(raw);
-      if (!base?.id) return null;
-      const [cdnUrl, detail, lyric] = await Promise.all([
-        getUrl(base.id).catch(() => null),
-        getDetail(base.id).catch(() => null),
-        getLyric(base.id).catch(() => ''),
-      ]);
-      return {
-        ...base,
-        artist: detail?.artist || base.artist,
-        album: detail?.album || '',
-        cover: detail?.cover || base.cover || null,
-        duration: detail?.duration || null,
-        publishTime: detail?.publishTime || null,
-        lyric: lyric || '',
-        url: cdnUrl ? `/api/song/stream?id=${base.id}` : null,
-        raw,
-      };
+      return await hydrateQueueSong(raw, {
+        includeLyric: index < Math.max(0, Number(eagerLyricCount) || 0),
+      });
     } catch {
       return null;
     }
@@ -42,6 +27,30 @@ export async function resolveQueue(playList) {
     .filter(Boolean);
 }
 
+export async function hydrateQueueSong(raw, { includeLyric = true } = {}) {
+  const base = await resolveBaseSong(raw);
+  if (!base?.id) return null;
+  const needsDetail = !base.album || !base.duration || !base.cover || !base.artist;
+
+  const [cdnUrl, detail, lyric] = await Promise.all([
+    base.url ? Promise.resolve(base.url) : getUrl(base.id).catch(() => null),
+    needsDetail ? getDetail(base.id).catch(() => null) : Promise.resolve(null),
+    includeLyric ? getLyric(base.id).catch(() => '') : Promise.resolve(base.lyric || ''),
+  ]);
+
+  return {
+    ...base,
+    artist: detail?.artist || base.artist,
+    album: detail?.album || base.album || '',
+    cover: detail?.cover || base.cover || null,
+    duration: detail?.duration || base.duration || null,
+    publishTime: detail?.publishTime || base.publishTime || null,
+    lyric: lyric || base.lyric || '',
+    url: base.url || (cdnUrl ? `/api/song/stream?id=${base.id}` : null),
+    raw: base.raw,
+  };
+}
+
 async function resolveBaseSong(raw) {
   if (raw && typeof raw === 'object' && raw.id) {
     return {
@@ -49,7 +58,20 @@ async function resolveBaseSong(raw) {
       name: String(raw.name || ''),
       artist: String(raw.artist || ''),
       fee: Number(raw.fee || 0),
+      album: String(raw.album || ''),
       cover: raw.cover || null,
+      duration: Number(raw.duration || 0) || null,
+      publishTime: Number(raw.publishTime || 0) || null,
+      lyric: String(raw.lyric || ''),
+      url: raw.url || null,
+      requestText: String(raw.requestText || ''),
+      requestReason: String(raw.requestReason || ''),
+      segue: String(raw.segue || ''),
+      reasonLabels: Array.isArray(raw.reasonLabels) ? raw.reasonLabels : [],
+      toplist: raw.toplist || null,
+      musicPlan: raw.musicPlan || null,
+      weather: String(raw.weather || ''),
+      timePart: String(raw.timePart || ''),
       raw: String(raw.raw || `${raw.name || ''} - ${raw.artist || ''}`).trim(),
     };
   }

@@ -47,6 +47,7 @@ export async function buildContext(userInput, env = {}) {
     formatProfileForPrompt(profile),
     '\n---\n## 环境',
     envBlock,
+    formatInteractionModeContext(env.interactionMode),
     formatMusicPlanContext(env.musicPlan),
     formatWebSearchContext(env.webSearch),
     '\n## 最近播放（避免重复）',
@@ -73,9 +74,9 @@ function formatMusicPlanContext(plan) {
   if (!plan || typeof plan !== 'object') return '';
 
   const lines = [
-    '\n## 点歌理解器给出的结构化意图',
-    '这是对用户原话的理解，选曲时优先遵守；它不是最终歌单。',
-    plan.intent ? `意图：${plan.intent}` : '',
+    '\n## 本轮输入的结构化理解',
+    '这是理解层对用户原话的解析，聊天和选曲都优先参考；它不是最终输出。',
+    plan.intent ? `理解意图：${plan.intent}` : '',
     plan.count ? `期望数量：${plan.count}` : '',
     plan.exactQuery ? `精确搜歌关键词：${plan.exactQuery}` : '',
     plan.toplistName ? `榜单方向：${plan.toplistName}` : '',
@@ -91,6 +92,17 @@ function formatMusicPlanContext(plan) {
   ].filter(Boolean);
 
   return lines.join('\n');
+}
+
+function formatInteractionModeContext(mode) {
+  if (!mode) return '';
+  if (mode === 'chat') {
+    return '\n## 当前交互模式\n聊天模式：这一轮只聊天，不自动切歌、不自动起新歌单。';
+  }
+  if (mode === 'song') {
+    return '\n## 当前交互模式\n点歌模式：这一轮允许规划歌单和切歌。';
+  }
+  return '';
 }
 
 function formatWebSearchContext(search) {

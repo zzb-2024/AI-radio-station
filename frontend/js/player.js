@@ -42,10 +42,15 @@ export class Player {
     this._djPreviewPlayedKey = '';
     this._djPreviewRetryAt = 0;
     this._audioContextUnlockBound = false;
+    this._lifecycleBound = false;
+    this._pendingAutoplay = false;
     this.audioSettings = normalizeAudioSettings(DEFAULT_AUDIO_SETTINGS);
 
     // UI events
-    audioEl.addEventListener('play',  () => ui.btnPlay.textContent = '⏸');
+    audioEl.addEventListener('play',  () => {
+      this._pendingAutoplay = false;
+      ui.btnPlay.textContent = '⏸';
+    });
     audioEl.addEventListener('pause', () => ui.btnPlay.textContent = '▶');
     audioEl.addEventListener('ended', () => this._handleMainEnded());
     audioEl.addEventListener('timeupdate', () => {
@@ -66,6 +71,7 @@ export class Player {
 
     this.setAudioSettings(this.audioSettings);
     this._bindAudioContextUnlock();
+    this._bindLifecycleEvents();
   }
 
   on(event, fn) { (this._listeners[event] ||= []).push(fn); }
@@ -166,6 +172,7 @@ export class Player {
         this._cancelFade('main');
         this.audio.volume = 0;
       }
+      this._pendingAutoplay = true;
       this.audio.play().catch(() => {});
       if (selectionChanged) {
         const targetVolume = this._getMainPlaybackTargetVolume();
@@ -432,6 +439,22 @@ export class Player {
     window.addEventListener('touchstart', unlock, { once: true, passive: true, capture: true });
   }
 
+  _bindLifecycleEvents() {
+    if (this._lifecycleBound || typeof document === 'undefined') return;
+    this._lifecycleBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) return;
+      this._flushFades();
+      return;
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      if (this._pendingAutoplay && this.currentSong?.url && this.audio.paused) {
+        this.audio.play().catch(() => {});
+      }
+    });
+  }
+
   async _ensureTtsAudioContext() {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     if (!Ctor) throw new Error('AudioContext unavailable');
@@ -460,7 +483,8 @@ export class Player {
   _cancelFade(slot) {
     const tween = this._volumeTweens[slot];
     if (!tween) return;
-    cancelAnimationFrame(tween.frameId);
+    if (tween.type === 'timeout') clearTimeout(tween.frameId);
+    else cancelAnimationFrame(tween.frameId);
     this._volumeTweens[slot] = null;
   }
 
@@ -473,13 +497,13 @@ export class Player {
     }
 
     const duration = Math.max(0, durationMs || 0);
-    if (!duration || Math.abs(target - from) < 0.001) {
+    if (!duration || Math.abs(target - from) < 0.001 || this._shouldSkipAnimatedFade()) {
       write(clamp(target, min, max));
       return;
     }
 
     const start = performance.now();
-    const tween = { frameId: 0, target };
+    const tween = { frameId: 0, target, write, min, max, type: this._fadeSchedulerType() };
     this._volumeTweens[slot] = tween;
 
     const tick = now => {
@@ -488,11 +512,37 @@ export class Player {
       const eased = easeInOutCubic(progress);
       const value = clamp(from + (target - from) * eased, min, max);
       write(value);
-      if (progress < 1) tween.frameId = requestAnimationFrame(tick);
+      if (progress < 1) tween.frameId = this._scheduleFadeTick(tween, tick);
       else this._volumeTweens[slot] = null;
     };
 
-    tween.frameId = requestAnimationFrame(tick);
+    tween.frameId = this._scheduleFadeTick(tween, tick);
+  }
+
+  _scheduleFadeTick(tween, tick) {
+    if (tween.type === 'timeout') {
+      return setTimeout(() => tick(performance.now()), 16);
+    }
+    return requestAnimationFrame(tick);
+  }
+
+  _fadeSchedulerType() {
+    if (typeof document !== 'undefined' && document.hidden) return 'timeout';
+    if (typeof requestAnimationFrame !== 'function') return 'timeout';
+    return 'raf';
+  }
+
+  _shouldSkipAnimatedFade() {
+    return typeof document !== 'undefined' && document.hidden;
+  }
+
+  _flushFades() {
+    for (const slot of Object.keys(this._volumeTweens)) {
+      const tween = this._volumeTweens[slot];
+      if (!tween) continue;
+      this._cancelFade(slot);
+      tween.write(clamp(tween.target, tween.min, tween.max));
+    }
   }
 
   _playMeta(source = 'manual') {

@@ -10,7 +10,7 @@ import { fetchWeather } from './services/weather.js';
 import { searchWeb } from './services/web-search.js';
 import { state } from './core/state.js';
 import { route as routeIntent, extractDirectKeyword } from './core/intent.js';
-import { resolveQueue } from './core/queue.js';
+import { hydrateQueueSong, resolveQueue } from './core/queue.js';
 import {
   buildProfileSuggestion,
   estimateSkipStrength,
@@ -50,9 +50,11 @@ export function registerRoutes(app, playback) {
         return await sendChatOnlyResponse({ res, playback, requestId, result });
       }
 
+      const queueTask = resolveQueue(result.play || [], { eagerLyricCount: 1 });
+      const ttsTask = result.say ? synthesize(result.say) : Promise.resolve(null);
       const weather = await getListeningWeather();
       const timePart = getTimePart();
-      const queue = await resolveQueue(result.play || []);
+      const queue = await queueTask;
       playback.setQueue(annotateQueueContext(queue, {
         requestText: message,
         reason: result.reason || mode,
@@ -75,7 +77,10 @@ export function registerRoutes(app, playback) {
         }).catch(error => console.warn(`[profile] ${error.message}`));
       }
 
-      const ttsUrl = result.say ? await synthesize(result.say) : null;
+      const ttsUrl = await ttsTask;
+      if (song) {
+        void warmQueueForUpcomingPlayback(playback, playback.currentIndex + 1);
+      }
 
       const response = {
         ...result,
@@ -112,8 +117,9 @@ export function registerRoutes(app, playback) {
 
   app.get('/api/next', async (_req, res) => {
     const previousSong = playback.nowPlaying;
-    const song = playback.playNext({ broadcast: false });
+    let song = playback.playNext({ broadcast: false });
     if (song) {
+      song = await hydratePlaybackSong(playback, song);
       await state.addPlay(song.name, song.artist, song);
       const weather = await getListeningWeather();
       await learnProfileFromPlay(song, {
@@ -123,6 +129,7 @@ export function registerRoutes(app, playback) {
         weather,
         timePart: getTimePart(),
       }).catch(error => console.warn(`[profile] ${error.message}`));
+      void warmQueueForUpcomingPlayback(playback, playback.currentIndex + 1);
       const snapshot = playback.snapshot();
       playback.broadcast({ type: 'now-playing', ...snapshot });
       queueDjBroadcast(playback, snapshot, previousSong, '自动切到下一首');
@@ -149,6 +156,7 @@ export function registerRoutes(app, playback) {
     }
 
     if (song) {
+      song = await hydratePlaybackSong(playback, song);
       await state.addPlay(song.name, song.artist, song);
       if (shouldRecordSkip(action, previousSong, song, meta)) {
         const skipContext = buildSkipContext(previousSong, song, action, meta);
@@ -177,6 +185,7 @@ export function registerRoutes(app, playback) {
         weather,
         timePart: getTimePart(),
       }).catch(error => console.warn(`[profile] ${error.message}`));
+      void warmQueueForUpcomingPlayback(playback, playback.currentIndex + 1);
       const snapshot = playback.snapshot();
       playback.broadcast({ type: 'now-playing', ...snapshot });
       if (action !== 'prev') {
@@ -365,6 +374,8 @@ async function planFromInput(message, playback, mode = 'auto') {
 }
 
 async function planFromSongInput(message, playback) {
+  const fastDirectPlan = await tryFastDirectSongRequest(message);
+  if (fastDirectPlan) return fastDirectPlan;
   return await planFromMusicRequest(message, playback, { mode: 'song' });
 }
 
@@ -447,11 +458,38 @@ async function planFromAiSongRequest(message, playback, musicPlan = null) {
   }
 }
 
+async function tryFastDirectSongRequest(message) {
+  if (!shouldUseFastDirectSongPath(message)) return null;
+  const keyword = extractSongSearchKeyword(message);
+  if (!keyword) return null;
+  const songs = await search(keyword, config.queue.directSearchLimit).catch(() => []);
+  if (!songs.length) return null;
+  return {
+    say: makeDirectPlaySay(keyword, songs.length),
+    play: songs,
+    reason: 'direct',
+    segue: '',
+  };
+}
+
 async function planFromChatInput(message, playback) {
+  const musicPlan = await analyzeMusicRequest(message, {
+    currentSong: playback?.nowPlaying || null,
+    interactionMode: 'chat',
+  }).catch(error => {
+    console.warn(`[intent:chat] ${error.message}`);
+    return null;
+  });
   const weather = await fetchWeather();
   const currentSong = playback?.nowPlaying || null;
   const webSearch = await maybeSearchWeb({ message, currentSong, mode: 'chat' });
-  const env = { weather, currentSong, webSearch };
+  const env = {
+    weather,
+    currentSong,
+    webSearch,
+    musicPlan,
+    interactionMode: 'chat',
+  };
   return await askRadioChat(message, env, { allowPlanFallback: false });
 }
 
@@ -521,6 +559,19 @@ function extractSongSearchKeyword(message) {
     .replace(/^(播放|来一首|放一首|来点|来些|来首|放点|放些|推荐点|推荐一些|给我来点|给我来些|帮我找点|帮我播放|换几首歌|换几首|换几首的|换几首些|换几首首|换几首曲|换点|换些|点歌|搜歌|搜索|听点|想听点|想听|想听些|想听一些)\s*/i, '')
     .replace(/(吧|呗|一下|一些|一点|点)$/i, '')
     .trim() || text;
+}
+
+function shouldUseFastDirectSongPath(message) {
+  const text = String(message || '').trim();
+  if (!text) return false;
+  if (isToplistRequest(text) || isContextualMusicRequest(text)) return false;
+  if (isLikelyExactSongCommand(text)) return true;
+  if (/[，。！？,.!?]/.test(text)) return false;
+  if (text.length > 32) return false;
+  if (/(推荐|几首|来点|来些|放点|放些|听点|想听|适合|合适|歌单|榜单|榜上|热门|最新|天气|今天|心情|氛围|工作|学习|通勤|晚上|深夜|睡前|电音|电子|edm|house|techno|舞曲|古风|国风|摇滚|民谣|说唱|流行|治愈)/i.test(text)) {
+    return false;
+  }
+  return /[\u4e00-\u9fa5a-zA-Z0-9]/.test(text);
 }
 
 function isContextualMusicRequest(message) {
@@ -825,6 +876,39 @@ function clampNumber(value, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return min;
   return Math.max(min, Math.min(max, n));
+}
+
+async function hydratePlaybackSong(playback, song) {
+  if (!song?.id) return song;
+  if (song.url && song.lyric && song.album && song.duration) return song;
+
+  const hydrated = await hydrateQueueSong(song, { includeLyric: true }).catch(() => null);
+  if (!hydrated) return song;
+
+  const index = Number.isInteger(playback.currentIndex) ? playback.currentIndex : -1;
+  if (index >= 0 && index < playback.queue.length) {
+    playback.queue[index] = hydrated;
+  }
+  if (playback.nowPlaying?.id === song.id) {
+    playback.nowPlaying = hydrated;
+  }
+  return hydrated;
+}
+
+async function warmQueueForUpcomingPlayback(playback, startIndex = 0) {
+  const start = Math.max(0, Number(startIndex) || 0);
+  const queueRef = playback.queue;
+  for (let i = start; i < queueRef.length; i += 1) {
+    if (playback.queue !== queueRef) break;
+    const song = queueRef[i];
+    if (!song?.id || song.lyric) continue;
+    const hydrated = await hydrateQueueSong(song, { includeLyric: true }).catch(() => null);
+    if (!hydrated || playback.queue !== queueRef) continue;
+    queueRef[i] = hydrated;
+    if (playback.currentIndex === i && playback.nowPlaying?.id === hydrated.id) {
+      playback.nowPlaying = hydrated;
+    }
+  }
 }
 
 async function maybeSearchWeb({ message, currentSong, mode = 'auto' }) {

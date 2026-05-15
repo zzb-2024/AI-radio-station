@@ -21,6 +21,7 @@ export class Player {
    *   btnPlay: HTMLElement, btnPrev: HTMLElement, btnNext: HTMLElement,
    *   progress: HTMLElement, progressBar: HTMLElement,
    *   nameEl: HTMLElement, artistEl: HTMLElement, coverEl: HTMLElement,
+   *   stateEl?: HTMLElement, sourceEl?: HTMLElement, timeEl?: HTMLElement,
    * }} ui
    */
   constructor(audioEl, ui) {
@@ -50,13 +51,21 @@ export class Player {
     audioEl.addEventListener('play',  () => {
       this._pendingAutoplay = false;
       ui.btnPlay.textContent = '⏸';
+      this._setStatus('LIVE');
     });
-    audioEl.addEventListener('pause', () => ui.btnPlay.textContent = '▶');
+    audioEl.addEventListener('pause', () => {
+      ui.btnPlay.textContent = '▶';
+      this._setStatus(this.currentSong ? 'PAUSED' : 'IDLE');
+    });
     audioEl.addEventListener('ended', () => this._handleMainEnded());
+    audioEl.addEventListener('waiting', () => this._setStatus('BUFFER'));
+    audioEl.addEventListener('stalled', () => this._setStatus('BUFFER'));
+    audioEl.addEventListener('canplay', () => {
+      this._setStatus(audioEl.paused ? (this.currentSong ? 'PAUSED' : 'IDLE') : 'LIVE');
+    });
+    audioEl.addEventListener('loadedmetadata', () => this._updateProgressUI());
     audioEl.addEventListener('timeupdate', () => {
-      if (audioEl.duration) {
-        ui.progressBar.style.width = (audioEl.currentTime / audioEl.duration * 100) + '%';
-      }
+      this._updateProgressUI();
       this._maybePlayDjPreview();
     });
 
@@ -149,6 +158,8 @@ export class Player {
         this.audio.removeAttribute('src');
         this.audio.load();
         this.ui.progressBar.style.width = '0%';
+        this._updateProgressUI();
+        this._setStatus('IDLE');
         this._updateNowUI(null);
         this._emit('song-change', null);
       }
@@ -204,6 +215,11 @@ export class Player {
     }
   }
 
+  pause({ stopTts = true } = {}) {
+    if (stopTts) this._stopTTS();
+    this.audio.pause();
+  }
+
   async requestPlayIdx(i) {
     const state = await api.play('index', i, this._playMeta('manual')).catch(() => null);
     if (state) this.syncState(state, { autoplay: true });
@@ -245,6 +261,7 @@ export class Player {
       this.tts = null;
       this._detachTtsBoost();
       this._ttsRestoreTimer = setTimeout(() => this._restoreMainAudio(), this.audioSettings.ttsRestoreDelayMs);
+      this._setStatus(this.audio.paused ? (this.currentSong ? 'PAUSED' : 'IDLE') : 'LIVE');
     };
 
     tts.addEventListener('ended', finish, { once: true });
@@ -252,6 +269,7 @@ export class Player {
 
     try {
       await tts.play();
+      this._setStatus('TTS');
       if (boost) {
         this._fadeValue({
           slot: 'tts',
@@ -363,6 +381,23 @@ export class Player {
     this.ui.nameEl.textContent   = s?.name   || '—';
     this.ui.artistEl.textContent = s?.artist || '';
     this.ui.coverEl.innerHTML    = s?.cover ? `<img src="${s.cover}" alt="">` : '♪';
+    if (this.ui.sourceEl) this.ui.sourceEl.textContent = sourceLabelForSong(s) || 'LOCAL SIGNAL';
+    this._updateProgressUI();
+  }
+
+  _setStatus(status) {
+    if (this.ui.stateEl) this.ui.stateEl.textContent = status;
+  }
+
+  _updateProgressUI() {
+    const duration = Number.isFinite(this.audio.duration) ? this.audio.duration : 0;
+    const current = Number.isFinite(this.audio.currentTime) ? this.audio.currentTime : 0;
+    if (this.ui.progressBar) {
+      this.ui.progressBar.style.width = duration ? `${current / duration * 100}%` : '0%';
+    }
+    if (this.ui.timeEl) {
+      this.ui.timeEl.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
+    }
   }
 
   _duckMainAudio() {
@@ -584,6 +619,30 @@ function numberOr(value, fallback) {
 
 function fallbackTtsElementVolume(boostGain) {
   return clamp(numberOr(boostGain, DEFAULT_AUDIO_SETTINGS.ttsBoostGain), 0, 1);
+}
+
+function formatTime(seconds) {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  const mins = Math.floor(value / 60);
+  const secs = String(value % 60).padStart(2, '0');
+  return `${mins}:${secs}`;
+}
+
+function sourceLabelForSong(song = null) {
+  if (!song) return '';
+  if (song.toplist?.name) return song.toplist.name;
+  const plan = song.musicPlan || {};
+  if (plan.toplistName) return plan.toplistName;
+  if (plan.scene && plan.genre) return `${plan.scene} · ${plan.genre}`;
+  if (plan.scene) return plan.scene;
+  if (plan.genre) return plan.genre;
+  if (plan.mood) return plan.mood;
+  const reason = String(song.requestReason || '').trim();
+  if (reason === 'toplist') return '榜单';
+  if (reason === 'direct') return '搜歌';
+  if (reason === 'fallback') return '应急推荐';
+  if (/skip|跳过|avoid/i.test(reason)) return '根据跳过修正';
+  return reason.slice(0, 18);
 }
 
 function estimateSkipStrength({ playedMs = 0, durationMs = 0 } = {}) {

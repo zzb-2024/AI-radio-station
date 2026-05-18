@@ -581,10 +581,12 @@ function isContextualMusicRequest(message) {
 
   const hasMusicAction = /(推荐|给我来|来几首|来点|来些|放点|放些|听点|想听|换几首|换点|找点|帮我找点|歌单|音乐|歌曲)/i.test(text);
   const hasPluralOrPlanSignal = /(几首|几首歌|一些|一点|一批|来点|来些|放点|放些|听点|推荐|歌单|适合|合适|榜)/i.test(text);
-  const hasSceneSignal = /(今天|天气|阴天|雨天|下雨|晴天|多云|凉快|冷|热|闷|湿|干|早上|上午|中午|下午|晚上|深夜|睡前|通勤|学习|工作|跑步|开车|放松|治愈|安静|开心|难过|emo|焦虑|失眠|氛围|适合|合适|电音|电子|edm|house|techno|摇滚|民谣|爵士|说唱|古风|国风|流行)/i.test(text);
+  const hasSceneSignal = /(今天|天气|阴天|雨天|下雨|晴天|多云|凉快|冷|热|闷|闷闷|湿|干|早上|上午|中午|下午|晚上|深夜|睡前|通勤|学习|工作|跑步|开车|心情|状态|放松|治愈|安静|开心|难过|不好|低落|郁闷|压抑|烦躁|emo|焦虑|失眠|氛围|适合|合适|电音|电子|edm|house|techno|摇滚|民谣|爵士|说唱|古风|国风|流行)/i.test(text);
   const looksLikeSentence = /[，。！？,.!?]/.test(text) || text.length > 18;
 
-  return hasMusicAction && hasPluralOrPlanSignal && (hasSceneSignal || looksLikeSentence);
+  const implicitMoodRequest = hasSceneSignal && looksLikeSentence;
+  return (hasMusicAction && hasPluralOrPlanSignal && (hasSceneSignal || looksLikeSentence))
+    || implicitMoodRequest;
 }
 
 function isLikelyExactSongCommand(text) {
@@ -668,11 +670,11 @@ async function buildFallbackContextualSongPlan(message) {
 
 function pickFallbackKeyword(text) {
   const rules = [
-    [/阴天|下雨|雨天|多云|凉快|冷|阴沉|潮湿/, '治愈'],
+    [/阴天|下雨|雨天|多云|凉快|冷|阴沉|潮湿|闷|闷闷/, '治愈'],
     [/睡前|深夜|晚上|夜里|晚安/, '安静'],
     [/工作|学习|通勤|专注|办公/, 'lofi'],
     [/开心|轻松|放松|舒服|晴天|明亮/, '轻快'],
-    [/难过|emo|焦虑|失落|烦|不开心|低落/, '治愈'],
+    [/心情一般|心情不好|状态不好|难过|emo|焦虑|失落|烦|不开心|低落|郁闷|压抑|烦躁/, '治愈'],
     [/电音|电子|edm|house|techno|舞曲/, '电音'],
     [/古风|国风/, '古风'],
     [/摇滚/, '摇滚'],
@@ -690,8 +692,11 @@ function pickFallbackKeyword(text) {
 }
 
 function buildFallbackSay(text) {
-  if (/阴天|下雨|雨天|多云|凉快|冷|阴沉|潮湿/.test(text)) {
-    return `今天这个天气，先给你挑几首顺一点的。`;
+  if (/心情一般|心情不好|状态不好|难过|emo|焦虑|失落|烦|不开心|低落|郁闷|压抑|烦躁/.test(text)) {
+    return `我听出来了，今天这口气不太顺。先给你接几首不吵的，把情绪慢慢托住。`;
+  }
+  if (/阴天|下雨|雨天|多云|凉快|冷|阴沉|潮湿|闷|闷闷/.test(text)) {
+    return `今天这个天气有点闷，我先给你挑几首顺一点、别太压人的。`;
   }
   if (/睡前|深夜|晚上|夜里|晚安/.test(text)) {
     return `夜里就别太闹了，我给你放轻一点的。`;

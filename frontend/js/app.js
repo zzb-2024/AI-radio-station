@@ -19,8 +19,7 @@ const modeBtn = $('mode-btn');
 const soundBtn = $('sound-btn');
 const playerWindowBtn = $('player-window-btn');
 const queueBtn = $('queue-btn');
-const queueModal = $('queue-modal');
-const queueClose = $('queue-close');
+const queueCol = $('queue-col');
 const statusRight = $('status-right');
 const lyricEl = $('lyric-ticker');
 const seenChatIds = new Set();
@@ -68,27 +67,15 @@ setInterval(() => setExternalPlayerActive(isExternalPlayerFresh()), 2500);
 profileBtn.addEventListener('click', () => {
   soundModal.hidden = true;
   soundBtn?.setAttribute('aria-expanded', 'false');
-  closeQueue();
 });
 soundBtn.addEventListener('click', () => {
   profileModal.hidden = true;
   profileBtn?.setAttribute('aria-expanded', 'false');
-  closeQueue();
 });
-queueBtn?.setAttribute('aria-expanded', 'false');
 queueBtn?.addEventListener('click', () => {
-  profileModal.hidden = true;
-  profileBtn?.setAttribute('aria-expanded', 'false');
-  soundModal.hidden = true;
-  soundBtn?.setAttribute('aria-expanded', 'false');
-  openQueue();
-});
-queueClose?.addEventListener('click', closeQueue);
-queueModal?.addEventListener('click', event => {
-  if (event.target === queueModal) closeQueue();
-});
-window.addEventListener('keydown', event => {
-  if (event.key === 'Escape') closeQueue();
+  queueCol?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  queueCol?.classList.add('pulse');
+  setTimeout(() => queueCol?.classList.remove('pulse'), 650);
 });
 
 // 歌词同步：每首歌换时重新绑定
@@ -225,21 +212,6 @@ function shouldSkipChatPayload(requestId) {
   seenChatIds.add(requestId);
   setTimeout(() => seenChatIds.delete(requestId), 60000);
   return false;
-}
-
-function openQueue() {
-  if (!queueModal || !queueBtn) return;
-  queueModal.hidden = false;
-  queueBtn.setAttribute('aria-expanded', 'true');
-  queueClose?.focus();
-}
-
-function closeQueue() {
-  if (!queueModal || !queueBtn) return;
-  if (queueModal.hidden) return;
-  queueModal.hidden = true;
-  queueBtn.setAttribute('aria-expanded', 'false');
-  queueBtn.focus();
 }
 
 function openExternalPlayerWindow() {

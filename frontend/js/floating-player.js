@@ -464,6 +464,8 @@ function floatingCss() {
 
     .fp-main{display:none;min-width:0;flex-direction:column;justify-content:center;gap:6px}
     .level-player .fp-main,.level-queue .fp-main{display:flex}
+    .level-player .fp-mini{grid-row:1 / -1;height:100%}
+    .level-player .fp-main{display:grid;grid-template-rows:auto auto auto minmax(58px,1fr) auto auto;align-content:stretch;height:100%}
     .fp-min{display:none;position:absolute;right:0;top:0;z-index:4;width:26px;height:26px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.055);color:#d1d7dd;font-size:18px;line-height:1}
     .level-player .fp-min,.level-queue .fp-min{display:block}
     .fp-topline{display:flex;align-items:center;gap:6px;min-width:0;color:#a6afb8;font-size:9px;letter-spacing:.12em}
@@ -471,6 +473,7 @@ function floatingCss() {
     #fp-song{font-size:18px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #fp-artist,#fp-lyric,#fp-time{color:#a6afb8;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #fp-lyric{min-height:15px;color:rgba(244,246,248,.72)}
+    .level-player #fp-lyric{align-self:center;justify-self:center;width:100%;height:52px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:15px;line-height:1.45;color:rgba(244,246,248,.84);white-space:normal;overflow:hidden;text-overflow:clip}
     #fp-progress{height:3px;background:rgba(255,255,255,.12);cursor:pointer}
     #fp-progress-bar{height:100%;width:0;background:#d1d7dd}
     .fp-controls{display:grid;grid-template-columns:30px 36px 30px minmax(0,1fr) 44px;gap:6px;align-items:center}
